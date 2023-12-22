@@ -118,11 +118,15 @@ int main()
         // we'll definitely load it on the first loop below.
     }
 
+    while (gpio_get(PIN_BUTT_A)) {
+    }
+
     // Determine angle offset of the motor.  Do a slow round of open loop 
     // control to capture the rotor and then read the position.
     const uint fp_bits = 12; // Fixed point bits to use for division
     uint32_t pole_angle = 0;
     uint32_t angle_offset = 2048;
+    uint32_t meas_pole_angle = 0;
     while (true) {
         uint32_t high, invl, one_clock, half_clock;
         // Load the PWM high time from the PIO.
@@ -150,11 +154,13 @@ int main()
         // Using 0-4095 for our angle range.
         // Convert wheel angle to angle relative to pole of 
         // magnet.
-        uint32_t meas_pole_angle = (wheel_angle * MOTOR_NUM_POLES/2) % 4096;
+        meas_pole_angle = (wheel_angle * MOTOR_NUM_POLES/2) % 4096;
 
-        if (pole_angle > 2048) {
-            angle_offset = (pole_angle - meas_pole_angle + 1500) & 0xfff;
-            angle_offset <<= 4;
+        if ((pole_angle % 16) == 0)
+            printf("%04d %04d\n", pole_angle, wheel_angle);
+
+        if (pole_angle == 256) {
+            angle_offset = (pole_angle - meas_pole_angle) % 4096;
             break;
         }
 
@@ -169,6 +175,13 @@ int main()
     
         gpio_put(PIN_DEBUG, 0);
     }
+
+
+    pwm_set_chan_level(pwm_slice_a, pwm_chan_a, 0);
+    pwm_set_chan_level(pwm_slice_b, pwm_chan_b, 0);
+    pwm_set_chan_level(pwm_slice_c, pwm_chan_c, 0);
+    printf("Pole angle: %04d meas_pole_angle: %04d angle_offset: %04d\n", 
+        pole_angle, meas_pole_angle, angle_offset);
 
     // Start closed-loop control.
     uint32_t throttle = 0x8ff;
@@ -200,7 +213,7 @@ int main()
         // Convert wheel angle to angle relative to pole of 
         // magnet.
         uint32_t meas_pole_angle = (wheel_angle * MOTOR_NUM_POLES/2) % 4096;
-        pole_angle=meas_pole_angle + 4096 + (angle_offset>>4);
+        pole_angle=meas_pole_angle + 4096 + angle_offset + 1024;
         u_int16_t duty_a = pwm_lut[(pole_angle) % LUT_LEN];
         u_int16_t duty_b = pwm_lut[(pole_angle + (LUT_LEN/3)) % LUT_LEN];
         u_int16_t duty_c = pwm_lut[(pole_angle + (2*LUT_LEN/3)) % LUT_LEN];
