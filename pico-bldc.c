@@ -234,17 +234,9 @@ int main()
         pole_angle=meas_pole_angle + 4096 + angle_offset + (target_speed>0?1024:(1024*3));
 
         if (target_speed > 0) {
-            if (delta_angle < target_speed && throttle < 4096) {
-                throttle+=40;
-            } else if (throttle > 0) {
-                throttle-=10;
-            }
+            throttle += target_speed - delta_angle;
         } else if (target_speed < 0) {
-            if (delta_angle > target_speed && throttle < 4096) {
-                throttle+=40;
-            } else if (throttle > 0) {
-                throttle-=10;
-            }
+            throttle += delta_angle - target_speed;
         } else {
             throttle = 0;
         }
