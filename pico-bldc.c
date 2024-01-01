@@ -5,6 +5,7 @@
 #include "hardware/pwm.h"
 #include "hardware/divider.h"
 #include "hardware/spi.h"
+#include "hardware/timer.h"
 #include "hardware/i2c.h"
 #include "hardware/pio.h"
 #include "pwmhigh.pio.h"
@@ -119,6 +120,7 @@ int main()
     }
 
     while (gpio_get(PIN_BUTT_A)) {
+        // Wait for the (active low) button to be pressed.
     }
 
     // Determine angle offset of the motor.  Do a slow round of open loop 
@@ -127,6 +129,7 @@ int main()
     uint32_t pole_angle = 0;
     uint32_t angle_offset = 2048;
     uint32_t meas_pole_angle = 0;
+    int32_t last_wheel_angle;
     for (pole_angle = 0; pole_angle < 256; pole_angle++) {
         uint32_t high, invl, one_clock, half_clock;
         // Load the PWM high time from the PIO.
@@ -146,10 +149,8 @@ int main()
         // Convert to fixed point for better precision.
         high = high << fp_bits;
         // Convert to angle (in 4096ths of a circle).
-        uint32_t wheel_angle = ((high + half_clock) / one_clock) - 16;
-        if (wheel_angle > 4095) {
-            wheel_angle = 0;
-        }
+        int32_t wheel_angle = (((high + half_clock) / one_clock) - 16) & 0xfff;
+        last_wheel_angle = wheel_angle;
 
         // Using 0-4095 for our angle range.
         // Convert wheel angle to angle relative to pole of 
@@ -180,7 +181,10 @@ int main()
         pole_angle, meas_pole_angle, angle_offset);
 
     // Start closed-loop control.
-    uint32_t throttle = 0x8ff;
+    int32_t target_speed = 100;
+    int32_t throttle = 0x8ff;
+    uint64_t last_time = time_us_64();
+    uint32_t n = 0;
     while (true) {
         uint32_t high, invl, one_clock, half_clock;
         // Load the PWM high time from the PIO.
@@ -188,6 +192,7 @@ int main()
             high = 0xffffffff - pio_sm_get_blocking(pio, sm_high);
             gpio_put(PIN_DEBUG, 1);
         } while (pio_sm_get_rx_fifo_level(pio, sm_high));
+        uint64_t this_time = time_us_64();
 
         // Load any updated PWM interval from the PIO.  The interval
         // is updated every other PWM cycle so we don't wait for it.
@@ -200,16 +205,58 @@ int main()
         // Convert to fixed point for better precision.
         high = high << fp_bits;
         // Convert to angle (in 4096ths of a circle).
-        uint32_t wheel_angle = ((high + half_clock) / one_clock) - 16;
-        if (wheel_angle > 4095) {
-            wheel_angle = 0;
+        int32_t wheel_angle = ((high + half_clock) / one_clock) - 16;
+
+        // Calculate speed.
+        uint64_t delta_t_us = this_time - last_time;
+        int32_t delta_angle = wheel_angle - last_wheel_angle;
+        if (delta_angle >= 2048) {
+            delta_angle -= 4096;
+        } else if (delta_angle < -2048) {
+            delta_angle += 4096;
         }
+
+        last_wheel_angle = wheel_angle;
+        last_time = this_time;
+
+        // The wheel angle is sampled at the start of the interval but we only
+        // receive it at the end.  Compensate for that by adding on the delta.
+        wheel_angle += delta_angle;
+        wheel_angle &= 0xfff;
+
+        // Measured values are up +/- 40.  Scale that into range with target_speed.
+        delta_angle *= 50;
 
         // Using 0-4095 for our angle range.
         // Convert wheel angle to angle relative to pole of 
         // magnet.
         uint32_t meas_pole_angle = (wheel_angle * MOTOR_NUM_POLES/2) % 4096;
-        pole_angle=meas_pole_angle + 4096 + angle_offset + 1024;
+        pole_angle=meas_pole_angle + 4096 + angle_offset + (target_speed>0?1024:(1024*3));
+
+        if (target_speed > 0) {
+            if (delta_angle < target_speed && throttle < 4096) {
+                throttle+=40;
+            } else if (throttle > 0) {
+                throttle-=10;
+            }
+        } else if (target_speed < 0) {
+            if (delta_angle > target_speed && throttle < 4096) {
+                throttle+=40;
+            } else if (throttle > 0) {
+                throttle-=10;
+            }
+        } else {
+            throttle = 0;
+        }
+        
+        if (throttle > 4095) throttle=4095;
+        if (throttle < 0) throttle=0;
+        
+        // if ((n % 16) == 0) {
+        //     printf("v=%04d\n", delta_angle);
+        // }
+        n++;
+
         u_int16_t duty_a = pwm_lut[(pole_angle) % LUT_LEN];
         u_int16_t duty_b = pwm_lut[(pole_angle + (LUT_LEN/3)) % LUT_LEN];
         u_int16_t duty_c = pwm_lut[(pole_angle + (2*LUT_LEN/3)) % LUT_LEN];
@@ -226,11 +273,11 @@ int main()
         //  wheel_angle, meas_pole_angle, pole_angle, duty_a, duty_b, duty_c);
         
         // Read buttons (which are pull-downs) and adjust angle offset accordingly.
-        if (!gpio_get(PIN_BUTT_A) && throttle > 0) {
-            throttle--;
+        if (!gpio_get(PIN_BUTT_A) && target_speed > -4095) {
+            target_speed--;
         }
-        if (!gpio_get(PIN_BUTT_B) && throttle < 0xfff) {
-            throttle++;
+        if (!gpio_get(PIN_BUTT_B) && target_speed < 4095) {
+            target_speed++;
         }
 
         gpio_put(PIN_DEBUG, 0);
