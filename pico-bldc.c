@@ -127,7 +127,7 @@ int main()
     uint32_t pole_angle = 0;
     uint32_t angle_offset = 2048;
     uint32_t meas_pole_angle = 0;
-    while (true) {
+    for (pole_angle = 0; pole_angle < 256; pole_angle++) {
         uint32_t high, invl, one_clock, half_clock;
         // Load the PWM high time from the PIO.
         do {
@@ -156,15 +156,10 @@ int main()
         // magnet.
         meas_pole_angle = (wheel_angle * MOTOR_NUM_POLES/2) % 4096;
 
-        if ((pole_angle % 16) == 0)
+        if ((pole_angle % 16) == 0) {
             printf("%04d %04d\n", pole_angle, wheel_angle);
-
-        if (pole_angle == 256) {
-            angle_offset = (pole_angle - meas_pole_angle) % 4096;
-            break;
         }
 
-        pole_angle=pole_angle+1;
         u_int16_t duty_a = pwm_lut[(pole_angle) % LUT_LEN];
         u_int16_t duty_b = pwm_lut[(pole_angle + (LUT_LEN/3)) % LUT_LEN];
         u_int16_t duty_c = pwm_lut[(pole_angle + (2*LUT_LEN/3)) % LUT_LEN];
@@ -176,6 +171,7 @@ int main()
         gpio_put(PIN_DEBUG, 0);
     }
 
+    angle_offset = (pole_angle - meas_pole_angle) % 4096;
 
     pwm_set_chan_level(pwm_slice_a, pwm_chan_a, 0);
     pwm_set_chan_level(pwm_slice_b, pwm_chan_b, 0);
