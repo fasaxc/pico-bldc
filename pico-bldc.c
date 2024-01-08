@@ -1,13 +1,14 @@
 #include <stdio.h>
 #include <math.h>
 #include "pico/stdlib.h"
+#include "pico/i2c_slave.h"
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
 #include "hardware/divider.h"
 #include "hardware/spi.h"
 #include "hardware/timer.h"
-#include <hardware/i2c.h>
-#include <pico/i2c_slave.h>
+#include "hardware/i2c.h"
+#include "pico/critical_section.h"
 #include "hardware/pio.h"
 #include "pwmhigh.pio.h"
 #include "pwminvl.pio.h"
@@ -50,6 +51,7 @@ static struct
     uint8_t addr;
     uint32_t value;
     uint32_t value_out;
+    int num_bytes_received;
     bool addr_received;
 } i2c_context = {};
 
@@ -59,7 +61,21 @@ enum I2CRegs {
     I2C_REG_COUNT,
 };
 
+static critical_section_t i2c_reg_lock;
 static uint32_t volatile i2c_registers[I2C_REG_COUNT] = {};
+
+static inline uint32_t i2c_reg_get(enum I2CRegs num) {
+    critical_section_enter_blocking(&i2c_reg_lock);
+    uint32_t out = i2c_registers[num];
+    critical_section_exit(&i2c_reg_lock);
+    return out;
+}
+
+static inline uint32_t i2c_reg_set(enum I2CRegs num, uint32_t value) {
+    critical_section_enter_blocking(&i2c_reg_lock);
+    i2c_registers[num] = value;
+    critical_section_exit(&i2c_reg_lock);
+}
 
 // Our handler is called from the I2C ISR, so it must complete quickly. Blocking calls /
 // printing to stdio may interfere with interrupt handling.
@@ -69,12 +85,14 @@ static void i2c_slave_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
         uint8_t data = i2c_read_byte_raw(i2c);
         if (i2c_context.addr_received) {
             i2c_context.value = (i2c_context.value << 8) | data;
+            i2c_context.num_bytes_received++;
         } else {
             i2c_context.addr = data;
             i2c_context.addr_received = true;
             i2c_context.value = 0;
+            i2c_context.num_bytes_received = 0;
             if (i2c_context.addr < I2C_REG_COUNT) {
-                i2c_context.value_out = i2c_registers[i2c_context.addr];
+                i2c_context.value_out = i2c_reg_get(i2c_context.addr);
             } else {
                 i2c_context.value_out = 0;
             }
@@ -85,9 +103,11 @@ static void i2c_slave_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
         i2c_context.value_out <<= 8;
         break;
     case I2C_SLAVE_FINISH: // master has signalled Stop / Restart
-        if (i2c_context.addr < I2C_REG_COUNT) {
+        if (i2c_context.addr_received && 
+            (i2c_context.addr < I2C_REG_COUNT) &&
+            (i2c_context.num_bytes_received == 4)) {
             // Valid address.
-            i2c_registers[i2c_context.addr] = i2c_context.value;
+            i2c_reg_set(i2c_context.addr, i2c_context.value);
         }
         i2c_context.addr_received = false;
         break;
@@ -166,7 +186,8 @@ int main()
         pwm_lut[i] = (uint16_t)(clamped);
     }
 
-    // // I2C Initialisation. Using it at 400Khz.
+    // I2C Initialisation.
+    critical_section_init(&i2c_reg_lock);
     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(I2C_SDA);
