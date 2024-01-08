@@ -6,7 +6,8 @@
 #include "hardware/divider.h"
 #include "hardware/spi.h"
 #include "hardware/timer.h"
-#include "hardware/i2c.h"
+#include <hardware/i2c.h>
+#include <pico/i2c_slave.h>
 #include "hardware/pio.h"
 #include "pwmhigh.pio.h"
 #include "pwminvl.pio.h"
@@ -39,10 +40,57 @@
 // I2C defines
 // This example will use I2C0 on GPIO8 (SDA) and GPIO9 (SCL) running at 400KHz.
 // Pins can be changed, see the GPIO function select table in the datasheet for information on GPIO assignments
-// #define I2C_PORT i2c0
-// #define I2C_SDA 8
-// #define I2C_SCL 9
+#define I2C_PORT i2c0
+#define I2C_SDA 8
+#define I2C_SCL 9
+#define I2C_SLAVE_ADDRESS 0x42
 
+static struct
+{
+    uint8_t addr;
+    uint32_t value;
+    uint32_t value_out;
+    bool addr_received;
+} i2c_context = {};
+
+enum I2CRegs {
+    I2C_REG_CTRL,
+    I2C_REG_MOTOR_SPEEDS,
+    I2C_REG_COUNT,
+};
+
+static uint32_t volatile i2c_registers[I2C_REG_COUNT] = {};
+
+// Our handler is called from the I2C ISR, so it must complete quickly. Blocking calls /
+// printing to stdio may interfere with interrupt handling.
+static void i2c_slave_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
+    switch (event) {
+    case I2C_SLAVE_RECEIVE: // master has written some data
+        uint8_t data = i2c_read_byte_raw(i2c);
+        if (i2c_context.addr_received) {
+            i2c_context.value = (i2c_context.value << 8) | data;
+        } else {
+            i2c_context.addr = data;
+            i2c_context.addr_received = true;
+            i2c_context.value = 0;
+            i2c_context.value_out = i2c_registers[i2c_context.addr];
+        }
+        break;
+    case I2C_SLAVE_REQUEST: // master is requesting data
+        i2c_write_byte_raw(i2c, (uint8_t)(i2c_context.value_out>>24));
+        i2c_context.value_out <<= 8;
+        break;
+    case I2C_SLAVE_FINISH: // master has signalled Stop / Restart
+        if (i2c_context.addr < I2C_REG_COUNT) {
+            // Valid address.
+            i2c_registers[i2c_context.addr] = i2c_context.value;
+        }
+        i2c_context.addr_received = false;
+        break;
+    default:
+        break;
+    }
+}
 
 int main()
 {
@@ -113,6 +161,14 @@ int main()
         float clamped = scaled > PWM_TOP ? PWM_TOP : scaled;
         pwm_lut[i] = (uint16_t)(clamped);
     }
+
+    // // I2C Initialisation. Using it at 400Khz.
+    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(I2C_SDA);
+    gpio_pull_up(I2C_SCL);
+    i2c_init(I2C_PORT, 100*1000);
+    i2c_slave_init(I2C_PORT, I2C_SLAVE_ADDRESS, &i2c_slave_handler);
 
     while (!pio_sm_get_rx_fifo_level(pio, sm_invl)) {
         // Wait for the first interval measurement to arrive so
@@ -244,9 +300,9 @@ int main()
         if (throttle > 4095) throttle=4095;
         if (throttle < 0) throttle=0;
         
-        // if ((n % 16) == 0) {
-        //     printf("v=%04d\n", delta_angle);
-        // }
+        if ((n % 64) == 0) {
+             printf("v=%04d\n", delta_angle);
+        }
         n++;
 
         u_int16_t duty_a = pwm_lut[(pole_angle) % LUT_LEN];
@@ -287,13 +343,6 @@ int main()
     // gpio_put(PIN_CS, 1);
     
 
-    // // I2C Initialisation. Using it at 400Khz.
-    // i2c_init(I2C_PORT, 400*1000);
-    
-    // gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
-    // gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
-    // gpio_pull_up(I2C_SDA);
-    // gpio_pull_up(I2C_SCL);
 
 
     return 0;
