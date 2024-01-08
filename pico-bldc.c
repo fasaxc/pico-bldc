@@ -73,7 +73,11 @@ static void i2c_slave_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
             i2c_context.addr = data;
             i2c_context.addr_received = true;
             i2c_context.value = 0;
-            i2c_context.value_out = i2c_registers[i2c_context.addr];
+            if (i2c_context.addr < I2C_REG_COUNT) {
+                i2c_context.value_out = i2c_registers[i2c_context.addr];
+            } else {
+                i2c_context.value_out = 0;
+            }
         }
         break;
     case I2C_SLAVE_REQUEST: // master is requesting data
