@@ -98,7 +98,7 @@ static void i2c_slave_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
             }
         }
         break;
-    case I2C_SLAVE_REQUEST: // master is requesting data
+    case I2C_SLAVE_REQUEST: // master is requesting data, called once per byte.
         i2c_write_byte_raw(i2c, (uint8_t)(i2c_context.value_out>>24));
         i2c_context.value_out <<= 8;
         break;
@@ -266,6 +266,9 @@ int main()
     int32_t throttle = 0x8ff;
     uint64_t last_time = time_us_64();
     uint32_t n = 0;
+#define num_angles 3
+    int angle_idx = 0;
+    int32_t delta_angles[num_angles] = {};
     while (true) {
         uint32_t high, invl, one_clock, half_clock;
         // Load the PWM high time from the PIO.
@@ -286,7 +289,7 @@ int main()
         // Convert to fixed point for better precision.
         high = high << fp_bits;
         // Convert to angle (in 4096ths of a circle).
-        int32_t wheel_angle = ((high + half_clock) / one_clock) - 16;
+        int32_t wheel_angle = (((high + half_clock) / one_clock) - 16) % 4096;
 
         if (i2c_reg_get(I2C_REG_CTRL) & 1) {
             // I2C control is enabled.
@@ -300,24 +303,34 @@ int main()
 
         // Calculate speed.
         uint64_t delta_t_us = loop_start - last_time;
-        int32_t delta_angle = wheel_angle - last_wheel_angle;
-        if (delta_angle >= 2048) {
-            delta_angle -= 4096;
-        } else if (delta_angle < -2048) {
-            delta_angle += 4096;
+        int32_t this_delta_angle = wheel_angle - last_wheel_angle;
+        if (this_delta_angle >= 2048) {
+            this_delta_angle -= 4096;
+        } else if (this_delta_angle < -2048) {
+            this_delta_angle += 4096;
+        }
+        delta_angles[angle_idx] = this_delta_angle;
+        angle_idx++;
+        if (angle_idx==num_angles) {
+            angle_idx = 0;
         }
 
         last_wheel_angle = wheel_angle;
         last_time = loop_start;
 
+        // Measured values are up +/- 40.  Scale that into range with target_speed.
+        int32_t delta_angle = 0;
+        for (int i=0; i < num_angles; i++) {
+            delta_angle += delta_angles[i];
+        }
+        const int angle_scale_fac = 50;
+        delta_angle *= angle_scale_fac/num_angles;
+
         // The wheel angle is sampled at the start of the interval but we only
         // receive it at the end.  Compensate for that by adding on the delta.
-        wheel_angle += delta_angle;
+        wheel_angle += delta_angle/angle_scale_fac;
         const int interps = 8;
-        int32_t wheel_angle_inc = delta_angle/interps;
-
-        // Measured values are up +/- 40.  Scale that into range with target_speed.
-        delta_angle *= 50;
+        int32_t wheel_angle_inc = (delta_angle/angle_scale_fac)/interps;
 
         for (int i=0; i<interps; i++) {
             gpio_put(PIN_DEBUG, 1);
@@ -327,7 +340,7 @@ int main()
             // Convert wheel angle to angle relative to pole of 
             // magnet.
             uint32_t meas_pole_angle = (wheel_angle * MOTOR_NUM_POLES/2) % 4096;
-            pole_angle=meas_pole_angle + 4096 + angle_offset + (target_speed>0?1024:(1024*3));
+            pole_angle=(meas_pole_angle + 4096 + angle_offset + (target_speed>0?1024:(1024*3))) % 4096;
 
             if (i == 0) {
                 if (target_speed > 0) {
@@ -342,7 +355,7 @@ int main()
                 if (throttle < 0) throttle=0;
                 
                 if ((n % 64) == 0) {
-                    printf("v=%04d\n", delta_angle);
+                    printf("t=%04d v=%04d\n", target_speed, delta_angle);
                 }
                 n++;
             }
@@ -374,7 +387,7 @@ int main()
             }
         }
 
-        // Read buttons (which are pull-downs) and adjust angle offset accordingly.
+        // Read buttons (which are pull-downs) and adjust target speed accordingly.
         if (!gpio_get(PIN_BUTT_A) && target_speed > -4095) {
             target_speed--;
         }
@@ -382,20 +395,6 @@ int main()
             target_speed++;
         }
     }
-
-    // // SPI initialisation. This example will use SPI at 1MHz.
-    // spi_init(SPI_PORT, 1000*1000);
-    // gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
-    // gpio_set_function(PIN_CS,   GPIO_FUNC_SIO);
-    // gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
-    // gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
-    
-    // // Chip select is active-low, so we'll initialise it to a driven-high state
-    // gpio_set_dir(PIN_CS, GPIO_OUT);
-    // gpio_put(PIN_CS, 1);
-    
-
-
 
     return 0;
 }
