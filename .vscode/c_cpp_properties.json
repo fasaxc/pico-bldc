@@ -6,10 +6,15 @@
         "${workspaceFolder}/**",
         "${env:PICO_SDK_PATH}/**"
       ],
-      "defines": [],
+      "defines": [
+        "_Accum=int",
+        "_Fract=int",
+        "_Sat=",
+        "VSCODE"
+      ],
       "compilerPath": "/usr/bin/arm-none-eabi-gcc",
-      "cStandard": "gnu17",
-      "cppStandard": "gnu++14",
+      "cStandard": "gnu23",
+      "cppStandard": "gnu++23",
       "intelliSenseMode": "linux-gcc-arm",
       "configurationProvider" : "ms-vscode.cmake-tools"
     }

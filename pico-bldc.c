@@ -12,7 +12,7 @@
 #include "hardware/pio.h"
 #include "pwmhigh.pio.h"
 #include "pwminvl.pio.h"
-
+#include <stdfix.h>
 
 // GPIO defines
 #define PIN_DEBUG 0
@@ -45,6 +45,9 @@
 #define I2C_SDA 8
 #define I2C_SCL 9
 #define I2C_SLAVE_ADDRESS 0x42
+
+#define LUT_LEN 4096
+static u_int16_t pwm_lut[LUT_LEN];
 
 static struct
 {
@@ -116,6 +119,234 @@ static void i2c_slave_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
     }
 }
 
+// Make VSCode intellisense happy.
+//#define VSCODE
+#ifdef VSCODE
+#define _Accum int
+#define _Fract int
+#define fix15c(x) x
+#error VSCODE hack enabled
+#else
+#define fix15c(x) x ## k
+#endif
+
+#define fix15_t signed accum
+static inline fix15_t kbits(uint32_t x) {
+    union {
+        fix15_t f;
+        uint32_t y;
+    } u;
+    u.y = x;
+    return u.f;
+} 
+
+static inline void print_fix15(char *msg, fix15_t v) {
+    printf("%s=%+f ", msg, (float)v);
+}
+
+#define CLAMP_ANGLE(a) ((a+1000) - (int)(a+1000))
+
+#define ANGLE_RING_BUF_SIZE 4
+struct motor_cb {
+    fix15_t target_velocity;  // Revs/s
+    fix15_t angle_offset;     // Calibration offset to align poles.
+
+    uint pwm_slice_a, pwm_slice_b, pwm_slice_c;
+    uint pwm_chan_a, pwm_chan_b, pwm_chan_c;
+
+    fix15_t estimated_velocity; // Revs/sec
+    //fix15_t estimated_accel;    // Revs/sec sq
+
+    fix15_t output_throttle;    // -1.0 to 1.0
+    
+    fix15_t last_sensor_pwm_interval;
+
+    struct {
+        uint32_t time_us;
+        fix15_t angle;  // Range 0.0-1.0
+    } measured_angles_ring_buf[ANGLE_RING_BUF_SIZE];
+    int angle_buf_idx;
+
+    bool angle_meas_pending;
+    bool output_update_pending;
+};
+
+void motor_record_pwm_interval(struct motor_cb *cb, uint32_t raw_pio_output);
+void motor_record_pwm_high_time(struct motor_cb *cb, uint32_t raw_pio_output);
+void motor_record_angle_meas(struct motor_cb *cb, fix15_t angle);
+
+void motor_record_pwm_interval(struct motor_cb *cb, uint32_t raw_pio_output) {
+    uint32_t invl = 0xffffffff - raw_pio_output;
+    cb->last_sensor_pwm_interval = invl;
+}
+
+void motor_record_pwm_high_time(struct motor_cb *cb, uint32_t raw_pio_output) {
+    uint32_t invl = cb->last_sensor_pwm_interval;
+    invl <<= 12;
+    if (invl == 0) {
+        return;
+    }
+    uint32_t high = 0xffffffff - raw_pio_output;
+    high <<= 12;
+    uint32_t one_clock = invl / 
+        (16/*start bits*/ + 4095/*data bits*/ + 8/*end bits*/);
+    // Integer division truncates; add half a clock to get
+    // round-to-nearest.
+    uint32_t half_clock = one_clock / 2; 
+    uint32_t clocks = (high+half_clock)/one_clock; 
+    printf("h=%d i=%d ", high, invl);
+    fix15_t angle = (fix15_t)clocks - fix15c(16);
+    print_fix15("raw", angle);
+    angle >>= 12;
+    angle += cb->angle_offset;
+    angle = CLAMP_ANGLE(angle);
+    motor_record_angle_meas(cb, angle);
+}
+
+void motor_record_angle_meas(struct motor_cb *cb, fix15_t angle) {
+    uint32_t now = time_us_32();
+    int next_idx = cb->angle_buf_idx+1;
+    if (next_idx == ANGLE_RING_BUF_SIZE) {
+        next_idx = 0;
+    }
+    cb->measured_angles_ring_buf[next_idx].time_us = now;
+    cb->measured_angles_ring_buf[next_idx].angle = angle;
+    cb->angle_buf_idx = next_idx;
+    cb->angle_meas_pending = true;
+    cb->output_update_pending = true;
+}
+
+// Using kbits effectively divides by 2^15 so, to get seconds,
+// we need to multiply by 2^15 / 1,000,000.
+#define USEC_TO_FIX15_S(us) (kbits(us) * fix15c(0.032768))
+
+void motor_process_angle_meas(struct motor_cb *cb) {
+    int idx = cb->angle_buf_idx;
+    int prev_idx = (idx==0)?(ANGLE_RING_BUF_SIZE-1):(idx - 1);
+    fix15_t prev_angle = cb->measured_angles_ring_buf[prev_idx].angle;
+    uint32_t prev_time = cb->measured_angles_ring_buf[prev_idx].time_us;
+    if (prev_time == 0) {
+        // Need to wait for second reading.
+        return;
+    }
+    fix15_t current_angle = cb->measured_angles_ring_buf[idx].angle;
+    uint32_t current_time = cb->measured_angles_ring_buf[idx].time_us;
+    
+    uint32_t delta_t_us = current_time - prev_time;
+    fix15_t delta_angle = current_angle - prev_angle;
+    if (delta_angle > fix15c(0.5)) {
+        delta_angle -= 1;
+    } else if (delta_angle < fix15c(-0.5)) {
+        delta_angle += 1;
+    }
+
+    fix15_t delta_t_s = USEC_TO_FIX15_S(delta_t_us);
+    fix15_t est_v = delta_angle / delta_t_s;
+
+    static int n;
+    if ((n++ % 1) == 0) {
+        print_fix15("an", current_angle);
+        print_fix15("dan", delta_angle);
+        print_fix15("dt", delta_t_s);
+        print_fix15("ev", est_v);
+    }  
+
+    cb->estimated_velocity = est_v;
+
+    fix15_t v_error = cb->target_velocity - est_v;
+    cb->output_throttle += v_error * fix15c(0.1);
+    if (cb->output_throttle > fix15c(0.1)) {
+        cb->output_throttle = fix15c(0.1);
+    } else if (cb->output_throttle < fix15c(-0.1)) {
+        cb->output_throttle = fix15c(-0.1);
+    }
+}
+
+void motor_set_pwms(struct motor_cb *cb, fix15_t drive_angle) {
+    u_int16_t duty_a = 0, duty_b = 0, duty_c = 0;
+    uint lut_bin = drive_angle * LUT_LEN; 
+    
+    static int n;
+    if ((n++ % 1) == 0)
+        print_fix15("l", lut_bin);
+
+    fix15_t factor = cb->output_throttle < 0?-cb->output_throttle:cb->output_throttle;
+    if (cb->output_throttle != 0) {
+        duty_a = pwm_lut[(lut_bin) % LUT_LEN] * factor;
+        duty_b = pwm_lut[(lut_bin + (LUT_LEN/3)) % LUT_LEN] * factor;
+        duty_c = pwm_lut[(lut_bin + (2*LUT_LEN/3)) % LUT_LEN] * factor;
+    }
+
+    printf("a=%4hd b=%4hd c=%4hd", duty_a, duty_b, duty_c);
+
+    pwm_set_chan_level(cb->pwm_slice_a, cb->pwm_chan_a, duty_a);
+    pwm_set_chan_level(cb->pwm_slice_b, cb->pwm_chan_b, duty_b);
+    pwm_set_chan_level(cb->pwm_slice_c, cb->pwm_chan_c, duty_c);
+}
+
+// Nature of the PWM signal means we're always 1ms behind.
+#define READING_DELAY_US 1000
+void motor_update_output(struct motor_cb *cb) {
+    // Estimate current position of the motor given time since 
+    // last reading and calculated velocity.
+    int idx = cb->angle_buf_idx;
+    fix15_t last_reading_angle = cb->measured_angles_ring_buf[idx].angle;
+    uint32_t last_reading_time = cb->measured_angles_ring_buf[idx].time_us;
+    uint32_t now = time_us_32();
+    uint32_t us_since_reading = now - last_reading_time + READING_DELAY_US;
+    fix15_t s_since_reading = USEC_TO_FIX15_S(us_since_reading);
+    fix15_t angle_est = last_reading_angle + cb->estimated_velocity * s_since_reading;
+    
+    static int n;
+    angle_est = CLAMP_ANGLE(angle_est);
+
+    // Multiply up by number of pole pairs to get the effective electrical
+    // "angle". 
+    fix15_t meas_pole_angle = angle_est*(MOTOR_NUM_POLES/2);
+    fix15_t drive_angle = meas_pole_angle;
+    if (cb->output_throttle < 0) {
+        drive_angle += fix15c(0.25);
+    } else if (cb->output_throttle > 0) {
+        drive_angle -= fix15c(0.25);
+    }
+    drive_angle = CLAMP_ANGLE(drive_angle);
+
+    //if ((n++ % 1) == 0) {
+        print_fix15("ma", meas_pole_angle);
+        print_fix15("dra", drive_angle);
+    //}
+
+    motor_set_pwms(cb, drive_angle);
+}
+
+void motor_update(struct motor_cb *cb) {
+    if (cb->angle_meas_pending) {
+        cb->angle_meas_pending = false;
+        motor_process_angle_meas(cb);
+    }
+    if (cb->output_update_pending) {
+        cb->output_update_pending = false;
+        motor_update_output(cb);
+    }
+    printf("\n");
+}
+
+static uint32_t drain_pio_fifo_blocking(PIO pio, uint sm) {
+    uint32_t v;
+    do {
+        v = pio_sm_get_blocking(pio, sm);
+    } while (!pio_sm_is_rx_fifo_empty(pio, sm));
+    return v;
+}
+
+static uint32_t drain_pio_fifo_non_block(PIO pio, uint sm) {
+    uint32_t v = 0;
+    while (!pio_sm_is_rx_fifo_empty(pio, sm)) { 
+        v = pio_sm_get(pio, sm);
+    }
+    return v;
+}
+
 int main()
 {
     stdio_init_all();
@@ -174,9 +405,7 @@ int main()
     pwmhigh_program_init(pio, sm_high, offset_high, PIN_PWM_IN);
     
     // Init LUT for sine.
-#define LUT_LEN 4096
 #define PWM_OFFSET 0.032f
-    u_int16_t pwm_lut[LUT_LEN];
     for (int i=0; i<LUT_LEN; i++) {
         float angle = i*M_TWOPI/LUT_LEN;
         float sinef = sinf(angle);
@@ -262,6 +491,42 @@ int main()
         pole_angle, meas_pole_angle, angle_offset);
 
     // Start closed-loop control.
+    struct motor_cb m = {
+        .target_velocity = 1000,
+        .angle_offset = ((fix15_t)angle_offset)/4096/(MOTOR_NUM_POLES/2),
+        .pwm_slice_a = pwm_slice_a,
+        .pwm_slice_b = pwm_slice_b,
+        .pwm_slice_c = pwm_slice_c,
+        .pwm_chan_a = pwm_chan_a,
+        .pwm_chan_b = pwm_chan_b,
+        .pwm_chan_c = pwm_chan_c,
+    };
+
+    while (true) {
+        uint32_t raw_pio_high = drain_pio_fifo_blocking(pio, sm_high);
+        uint32_t raw_pio_invl = drain_pio_fifo_non_block(pio, sm_invl);
+        
+        if (raw_pio_invl != 0) {
+            motor_record_pwm_interval(&m, raw_pio_invl);
+        }
+        gpio_put(PIN_DEBUG, 1);
+        motor_record_pwm_high_time(&m, raw_pio_high);
+
+        if (i2c_reg_get(I2C_REG_CTRL) & 1) {
+            // I2C control is enabled.
+            uint32_t motor_speeds = i2c_reg_get(I2C_REG_MOTOR_SPEEDS);
+            int32_t m1 = motor_speeds & 0xff;
+            if (m1 > 127) {
+                m1 -= 256;
+            }
+            m.target_velocity = ((fix15_t)m1)/10;
+        }
+
+        motor_update(&m);
+
+        gpio_put(PIN_DEBUG, 0);
+    }
+
     int32_t target_speed = 100;
     int32_t throttle = 0x8ff;
     uint64_t last_time = time_us_64();

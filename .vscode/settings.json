@@ -23,6 +23,9 @@
       "functional": "c",
       "tuple": "c",
       "type_traits": "c",
-      "utility": "c"
+      "utility": "c",
+      "stdfix.h": "c",
+      "pwminvl.pio.h": "c",
+      "random": "c"
     },
 }
