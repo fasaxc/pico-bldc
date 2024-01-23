@@ -1,17 +1,19 @@
 .program pwmhigh
 
-.wrap_target
   mov x, !NULL             ; x = 0xffffffff
-  wait 1 pin 0             ; wait for high
-
+  wait 0 pin 0             ; wait for low->high transition
+  wait 1 pin 0             ; 
+.wrap_target
 loop_high:                 ; do {
   jmp x-- cont_loop_high   ;   x--
 cont_loop_high:            ;
   nop                      ;   nop to match counting in pwminvl
   jmp PIN loop_high       ; } while pin is high
 
-  mov isr, x               ; send x
-  push noblock             ;    to FIFO
+  mov isr, x               ; Get x ready to send.
+  mov x, !NULL             ; Reset x to 0xffffffff
+  wait 1 pin 0             ; wait for high
+  push noblock             ; Send the prev value
 .wrap
 
 % c-sdk {
