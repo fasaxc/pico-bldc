@@ -10,8 +10,6 @@
 #include "hardware/i2c.h"
 #include "pico/critical_section.h"
 #include "hardware/pio.h"
-#include "pwmhigh.pio.h"
-#include "pwminvl.pio.h"
 
 #include "motor.h" // Must be last; includes stdfix.h, conflicts with SDK
 
@@ -111,22 +109,6 @@ static void i2c_slave_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
     default:
         break;
     }
-}
-
-static uint32_t drain_pio_fifo_blocking(PIO pio, uint sm) {
-    uint32_t v;
-    do {
-        v = pio_sm_get_blocking(pio, sm);
-    } while (!pio_sm_is_rx_fifo_empty(pio, sm));
-    return v;
-}
-
-static uint32_t drain_pio_fifo_non_block(PIO pio, uint sm) {
-    uint32_t v = 0;
-    while (!pio_sm_is_rx_fifo_empty(pio, sm)) { 
-        v = pio_sm_get(pio, sm);
-    }
-    return v;
 }
 
 int main()

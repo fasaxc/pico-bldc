@@ -23,7 +23,7 @@ void motor_global_init(PIO p) {
         pwm_lut[i] = (uint16_t)(clamped);
     }
 
-    // Configure PIO programs to measure PWM interval and high time
+    // Load PIO programs to measure PWM interval and high time
     // from the motor position sensor.
     pio = p;
     pio_offset_invl = pio_add_program(pio, &pwminvl_program);
@@ -68,13 +68,15 @@ void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_c, uint pi
 }
 
 void motor_calibrate(struct motor_cb *cb) {
+    // TODO Port the calibration code to the same fixed-point approach as the main loop.
+
     // Get some values to make sure the PWM signal is working...
     printf("Starting calibration...\n");
     for (int i=0; i<2; i++) {
         printf("Wait on interval...\n");
         uint32_t v = pio_sm_get_blocking(pio, cb->sm_invl);
         printf("Raw value: %d\n", v);
-        printf("Wait on high time...");
+        printf("Wait on high time...\n");
         v = pio_sm_get_blocking(pio, cb->sm_high);
         printf("Raw value: %d\n", v);
     }
@@ -89,28 +91,23 @@ void motor_calibrate(struct motor_cb *cb) {
     uint32_t pole_angle = 0;
     uint32_t angle_offset = 2048;
     uint32_t meas_pole_angle = 0;
-    int32_t last_wheel_angle;
     for (pole_angle = 0; pole_angle < 256; pole_angle++) {
         uint32_t high, invl, one_clock, half_clock;
         // Load the PWM high time from the PIO.
-        do {
-            high = 0xffffffff - pio_sm_get_blocking(pio, cb->sm_high);
-        } while (pio_sm_get_rx_fifo_level(pio, cb->sm_high));
+        high = 0xffffffff - drain_pio_fifo_blocking(pio, cb->sm_high);
 
         // Load any updated PWM interval from the PIO.  The interval
         // is updated every other PWM cycle so we don't wait for it.
-        while(pio_sm_get_rx_fifo_level(pio, cb->sm_invl)) {
-            invl = 0xffffffff - pio_sm_get_blocking(pio, cb->sm_invl);
-            one_clock = (invl << fp_bits) / (16+4095+8);
-            half_clock = one_clock / 2;
-        }
+        invl = 0xffffffff - drain_pio_fifo_non_block(pio, cb->sm_invl);
+        cb->last_sensor_pwm_interval = invl;
+        one_clock = (invl << fp_bits) / (16+4095+8);
+        half_clock = one_clock / 2;
 
         // Convert to fixed point for better precision.
         high = high << fp_bits;
         // Convert to angle (in 4096ths of a circle).
         int32_t wheel_angle = (((high + half_clock) / one_clock) - 16) & 0xfff;
-        last_wheel_angle = wheel_angle;
-
+        
         // Using 0-4095 for our angle range.
         // Convert wheel angle to angle relative to pole of 
         // magnet.
