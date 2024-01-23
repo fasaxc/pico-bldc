@@ -25,7 +25,7 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(pico-bldc pico-bldc.c )
+add_executable(pico-bldc pico-bldc.c motor.c)
 
 pico_generate_pio_header(pico-bldc ${CMAKE_CURRENT_LIST_DIR}/pwmhigh.pio)
 pico_generate_pio_header(pico-bldc ${CMAKE_CURRENT_LIST_DIR}/pwminvl.pio)
