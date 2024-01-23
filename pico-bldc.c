@@ -325,6 +325,7 @@ void motor_update(struct motor_cb *cb) {
         cb->angle_meas_pending = false;
         motor_process_angle_meas(cb);
     }
+
     if (cb->output_update_pending) {
         cb->output_update_pending = false;
         motor_update_output(cb);
@@ -505,13 +506,18 @@ int main()
 
     while (true) {
         uint32_t raw_pio_high = drain_pio_fifo_blocking(pio, sm_high);
+        uint32_t reading_time = time_us_32();
+        gpio_put(PIN_DEBUG, 1);
         uint32_t raw_pio_invl = drain_pio_fifo_non_block(pio, sm_invl);
         
+        // Note flipped order vs the reads; want to feed in the interval
+        // first.
         if (raw_pio_invl != 0) {
             motor_record_pwm_interval(&m, raw_pio_invl);
         }
-        gpio_put(PIN_DEBUG, 1);
-        motor_record_pwm_high_time(&m, raw_pio_high);
+        if (raw_pio_high != 0) {
+            motor_record_pwm_high_time(&m, raw_pio_high);
+        }
 
         if (i2c_reg_get(I2C_REG_CTRL) & 1) {
             // I2C control is enabled.
@@ -523,7 +529,10 @@ int main()
             m.target_velocity = ((fix15_t)m1)/10;
         }
 
-        motor_update(&m);
+        while ((time_us_32()-reading_time) < 900) {
+            m.output_update_pending = true; // Force it for now.
+            motor_update(&m);
+        }
 
         // Read buttons (which are pull-downs) and adjust target speed accordingly.
         if (!gpio_get(PIN_BUTT_A) && m.target_velocity > -20) {
