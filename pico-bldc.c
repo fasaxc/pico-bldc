@@ -194,9 +194,9 @@ void motor_record_pwm_high_time(struct motor_cb *cb, uint32_t raw_pio_output) {
     // round-to-nearest.
     uint32_t half_clock = one_clock / 2; 
     uint32_t clocks = (high+half_clock)/one_clock; 
-    printf("h=%d i=%d ", high, invl);
+    //printf("h=%d i=%d ", high, invl);
     fix15_t angle = (fix15_t)clocks - fix15c(16);
-    print_fix15("raw", angle);
+    //print_fix15("raw", angle);
     angle >>= 12;
     angle += cb->angle_offset;
     angle = CLAMP_ANGLE(angle);
@@ -243,22 +243,23 @@ void motor_process_angle_meas(struct motor_cb *cb) {
     fix15_t delta_t_s = USEC_TO_FIX15_S(delta_t_us);
     fix15_t est_v = delta_angle / delta_t_s;
 
-    static int n;
-    if ((n++ % 1) == 0) {
-        print_fix15("an", current_angle);
-        print_fix15("dan", delta_angle);
-        print_fix15("dt", delta_t_s);
-        print_fix15("ev", est_v);
-    }  
+    // static int n;
+    // if ((n++ % 1) == 0) {
+        //  print_fix15("an", current_angle);
+        //  print_fix15("dan", delta_angle);
+        //  print_fix15("dt", delta_t_s);
+        //  print_fix15("ev", est_v);
+        //  printf("\n");
+    // }  
 
     cb->estimated_velocity = est_v;
 
-    fix15_t v_error = cb->target_velocity - est_v;
-    cb->output_throttle += v_error * fix15c(0.1);
-    if (cb->output_throttle > fix15c(0.1)) {
-        cb->output_throttle = fix15c(0.1);
-    } else if (cb->output_throttle < fix15c(-0.1)) {
-        cb->output_throttle = fix15c(-0.1);
+    fix15_t v_error = -(cb->target_velocity - est_v);
+    cb->output_throttle += v_error * fix15c(0.02);
+    if (cb->output_throttle > fix15c(1)) {
+        cb->output_throttle = fix15c(1);
+    } else if (cb->output_throttle < fix15c(-1)) {
+        cb->output_throttle = fix15c(-1);
     }
 }
 
@@ -266,9 +267,9 @@ void motor_set_pwms(struct motor_cb *cb, fix15_t drive_angle) {
     u_int16_t duty_a = 0, duty_b = 0, duty_c = 0;
     uint lut_bin = drive_angle * LUT_LEN; 
     
-    static int n;
-    if ((n++ % 1) == 0)
-        print_fix15("l", lut_bin);
+    // static int n;
+    // if ((n++ % 1) == 0)
+    //     print_fix15("l", lut_bin);
 
     fix15_t factor = cb->output_throttle < 0?-cb->output_throttle:cb->output_throttle;
     if (cb->output_throttle != 0) {
@@ -277,7 +278,7 @@ void motor_set_pwms(struct motor_cb *cb, fix15_t drive_angle) {
         duty_c = pwm_lut[(lut_bin + (2*LUT_LEN/3)) % LUT_LEN] * factor;
     }
 
-    printf("a=%4hd b=%4hd c=%4hd", duty_a, duty_b, duty_c);
+    // printf("a=%4hd b=%4hd c=%4hd", duty_a, duty_b, duty_c);
 
     pwm_set_chan_level(cb->pwm_slice_a, cb->pwm_chan_a, duty_a);
     pwm_set_chan_level(cb->pwm_slice_b, cb->pwm_chan_b, duty_b);
@@ -312,8 +313,8 @@ void motor_update_output(struct motor_cb *cb) {
     drive_angle = CLAMP_ANGLE(drive_angle);
 
     //if ((n++ % 1) == 0) {
-        print_fix15("ma", meas_pole_angle);
-        print_fix15("dra", drive_angle);
+        // print_fix15("ma", meas_pole_angle);
+        // print_fix15("dra", drive_angle);
     //}
 
     motor_set_pwms(cb, drive_angle);
@@ -328,7 +329,7 @@ void motor_update(struct motor_cb *cb) {
         cb->output_update_pending = false;
         motor_update_output(cb);
     }
-    printf("\n");
+    //printf("\n");
 }
 
 static uint32_t drain_pio_fifo_blocking(PIO pio, uint sm) {
@@ -492,7 +493,7 @@ int main()
 
     // Start closed-loop control.
     struct motor_cb m = {
-        .target_velocity = 1000,
+        .target_velocity = fix15c(0.1),
         .angle_offset = ((fix15_t)angle_offset)/4096/(MOTOR_NUM_POLES/2),
         .pwm_slice_a = pwm_slice_a,
         .pwm_slice_b = pwm_slice_b,
@@ -524,141 +525,15 @@ int main()
 
         motor_update(&m);
 
-        gpio_put(PIN_DEBUG, 0);
-    }
-
-    int32_t target_speed = 100;
-    int32_t throttle = 0x8ff;
-    uint64_t last_time = time_us_64();
-    uint32_t n = 0;
-#define num_angles 3
-    int angle_idx = 0;
-    int32_t delta_angles[num_angles] = {};
-    while (true) {
-        uint32_t high, invl, one_clock, half_clock;
-        // Load the PWM high time from the PIO.
-        do {
-            high = 0xffffffff - pio_sm_get_blocking(pio, sm_high);
-            gpio_put(PIN_DEBUG, 1);
-        } while (pio_sm_get_rx_fifo_level(pio, sm_high));
-        uint64_t loop_start = time_us_64();
-
-        // Load any updated PWM interval from the PIO.  The interval
-        // is updated every other PWM cycle so we don't wait for it.
-        while(pio_sm_get_rx_fifo_level(pio, sm_invl)) {
-            invl = 0xffffffff - pio_sm_get_blocking(pio, sm_invl);
-            one_clock = (invl << fp_bits) / (16+4095+8);
-            half_clock = one_clock / 2;
-        }
-
-        // Convert to fixed point for better precision.
-        high = high << fp_bits;
-        // Convert to angle (in 4096ths of a circle).
-        int32_t wheel_angle = (((high + half_clock) / one_clock) - 16) % 4096;
-
-        if (i2c_reg_get(I2C_REG_CTRL) & 1) {
-            // I2C control is enabled.
-            uint32_t motor_speeds = i2c_reg_get(I2C_REG_MOTOR_SPEEDS);
-            int32_t m1 = motor_speeds & 0xff;
-            if (m1 > 127) {
-                m1 -= 256;
-            }
-            target_speed = m1 << 5;
-        }
-
-        // Calculate speed.
-        uint64_t delta_t_us = loop_start - last_time;
-        int32_t this_delta_angle = wheel_angle - last_wheel_angle;
-        if (this_delta_angle >= 2048) {
-            this_delta_angle -= 4096;
-        } else if (this_delta_angle < -2048) {
-            this_delta_angle += 4096;
-        }
-        delta_angles[angle_idx] = this_delta_angle;
-        angle_idx++;
-        if (angle_idx==num_angles) {
-            angle_idx = 0;
-        }
-
-        last_wheel_angle = wheel_angle;
-        last_time = loop_start;
-
-        // Measured values are up +/- 40.  Scale that into range with target_speed.
-        int32_t delta_angle = 0;
-        for (int i=0; i < num_angles; i++) {
-            delta_angle += delta_angles[i];
-        }
-        const int angle_scale_fac = 50;
-        delta_angle *= angle_scale_fac/num_angles;
-
-        // The wheel angle is sampled at the start of the interval but we only
-        // receive it at the end.  Compensate for that by adding on the delta.
-        wheel_angle += delta_angle/angle_scale_fac;
-        const int interps = 8;
-        int32_t wheel_angle_inc = (delta_angle/angle_scale_fac)/interps;
-
-        for (int i=0; i<interps; i++) {
-            gpio_put(PIN_DEBUG, 1);
-            wheel_angle &= 0xfff;
-
-            // Using 0-4095 for our angle range.
-            // Convert wheel angle to angle relative to pole of 
-            // magnet.
-            uint32_t meas_pole_angle = (wheel_angle * MOTOR_NUM_POLES/2) % 4096;
-            pole_angle=(meas_pole_angle + 4096 + angle_offset + (target_speed>0?1024:(1024*3))) % 4096;
-
-            if (i == 0) {
-                if (target_speed > 0) {
-                    throttle += target_speed - delta_angle;
-                } else if (target_speed < 0) {
-                    throttle += delta_angle - target_speed;
-                } else {
-                    throttle = 0;
-                }
-                
-                if (throttle > 4095) throttle=4095;
-                if (throttle < 0) throttle=0;
-                
-                if ((n % 64) == 0) {
-                    printf("t=%04d v=%04d\n", target_speed, delta_angle);
-                }
-                n++;
-            }
-
-            u_int16_t duty_a = pwm_lut[(pole_angle) % LUT_LEN];
-            u_int16_t duty_b = pwm_lut[(pole_angle + (LUT_LEN/3)) % LUT_LEN];
-            u_int16_t duty_c = pwm_lut[(pole_angle + (2*LUT_LEN/3)) % LUT_LEN];
-
-            duty_a = (duty_a * throttle) >> 12;
-            duty_b = (duty_b * throttle) >> 12;
-            duty_c = (duty_c * throttle) >> 12;
-
-            pwm_set_chan_level(pwm_slice_a, pwm_chan_a, duty_a);
-            pwm_set_chan_level(pwm_slice_b, pwm_chan_b, duty_b);
-            pwm_set_chan_level(pwm_slice_c, pwm_chan_c, duty_c);
-            
-            // printf("%04d %04d %04d %04d %04d %04d\n", 
-            //  wheel_angle, meas_pole_angle, pole_angle, duty_a, duty_b, duty_c);
-
-            gpio_put(PIN_DEBUG, 0);
-
-            wheel_angle += wheel_angle_inc;
-            if (i<(interps-1)) {
-                uint64_t target_time = loop_start + ((i+1)*delta_t_us/interps);
-                uint64_t now = time_us_64();
-                if (target_time > now) { 
-                    sleep_us(target_time - now);
-                }
-            }
-        }
-
         // Read buttons (which are pull-downs) and adjust target speed accordingly.
-        if (!gpio_get(PIN_BUTT_A) && target_speed > -4095) {
-            target_speed--;
+        if (!gpio_get(PIN_BUTT_A) && m.target_velocity > -20) {
+            m.target_velocity -= fix15c(0.005);
         }
-        if (!gpio_get(PIN_BUTT_B) && target_speed < 4095) {
-            target_speed++;
+        if (!gpio_get(PIN_BUTT_B) && m.target_velocity < 20) {
+            m.target_velocity += fix15c(0.005);
         }
+
+        gpio_put(PIN_DEBUG, 0);
     }
 
     return 0;
