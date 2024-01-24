@@ -152,21 +152,8 @@ int main()
     motor_init(&m, PIN_MOTOR_A, PIN_MOTOR_B, PIN_MOTOR_C, PIN_PWM_IN);
     motor_calibrate(&m);
 
+    int n = 0;
     while (true) {
-        uint32_t raw_pio_high = drain_pio_fifo_blocking(pio0, m.sm_high);
-        uint32_t reading_time = time_us_32();
-        gpio_put(PIN_DEBUG, 1);
-        uint32_t raw_pio_invl = drain_pio_fifo_non_block(pio0, m.sm_invl);
-        
-        // Note flipped order vs the reads; want to feed in the interval
-        // first.
-        if (raw_pio_invl != 0) {
-            motor_record_pwm_interval(&m, raw_pio_invl);
-        }
-        if (raw_pio_high != 0) {
-            motor_record_pwm_high_time(&m, raw_pio_high);
-        }
-
         if (i2c_reg_get(I2C_REG_CTRL) & 1) {
             // I2C control is enabled.
             uint32_t motor_speeds = i2c_reg_get(I2C_REG_MOTOR_SPEEDS);
@@ -177,20 +164,24 @@ int main()
             m.target_velocity = ((fix15_t)m1)/10;
         }
 
-        while ((time_us_32()-reading_time) < 900) {
-            m.output_update_pending = true; // Force it for now.
+        uint32_t start_time = time_us_32();
+        while ((time_us_32()-start_time) < 1000) {
             motor_update(&m);
+            motor_update_output(&m);
+            gpio_put(PIN_DEBUG, n++&1);
         }
 
         // Read buttons (which are pull-downs) and adjust target speed accordingly.
         if (!gpio_get(PIN_BUTT_A) && m.target_velocity > -20) {
             m.target_velocity -= fix15c(0.005);
+            print_fix15("v=", m.target_velocity);
+            printf("\n");
         }
         if (!gpio_get(PIN_BUTT_B) && m.target_velocity < 20) {
             m.target_velocity += fix15c(0.005);
+            print_fix15("v=", m.target_velocity);
+            printf("\n");
         }
-
-        gpio_put(PIN_DEBUG, 0);
     }
 
     return 0;

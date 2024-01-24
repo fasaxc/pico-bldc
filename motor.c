@@ -1,4 +1,6 @@
 #include "motor.h"
+#include "hardware/dma.h"
+#include "hardware/timer.h"
 
 #define MOTOR_NUM_POLES 22
 
@@ -65,6 +67,55 @@ void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_c, uint pi
     cb->sm_high = pio_claim_unused_sm(pio, true);
     printf("Init high time PIO on SM %d pin %d\n", cb->sm_high, pin_pwm_in);
     pwmhigh_program_init(pio, cb->sm_high, pio_offset_high, pin_pwm_in);
+
+    // Set up a pair of DMAs, the first to copy HIGH times out of the PIO,
+    // the second to write a timestamp.  Chain them to each other so that 
+    // they ping-pong.
+    int pio_chan = dma_claim_unused_channel(true);
+    int time_chan = dma_claim_unused_channel(true);
+
+    {
+        dma_channel_config c = dma_channel_get_default_config(pio_chan);
+        channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+        channel_config_set_read_increment(&c, false);
+        channel_config_set_write_increment(&c, false);
+        int dreq;
+        if (pio == pio0) {
+            dreq = DREQ_PIO0_RX0 + cb->sm_high;
+        } else {
+            dreq = DREQ_PIO1_RX0 + cb->sm_high;
+        }
+        channel_config_set_dreq(&c, dreq); 
+        channel_config_set_chain_to(&c, time_chan);    
+
+        dma_channel_configure(
+            pio_chan,               // Channel to be configured
+            &c,                     // The configuration we just created
+            NULL,                   // Write address
+            &pio->rxf[cb->sm_high], // Read address
+            1,             // Number of transfers.
+            false          // Don't start yet.
+        );
+    }
+    {
+        dma_channel_config c = dma_channel_get_default_config(time_chan);
+        channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+        channel_config_set_read_increment(&c, false);
+        channel_config_set_write_increment(&c, false);
+        channel_config_set_chain_to(&c, pio_chan);
+
+        dma_channel_configure(
+            time_chan,              // Channel to be configured
+            &c,                     // The configuration we just created
+            &cb->next_timestamp,    // Write address
+            &timer_hw->timerawl,    // Read address
+            1,             // Number of transfers.
+            false          // Don't start yet.
+        );
+    }
+
+    // Trigger the PIO DMA.
+    dma_channel_set_write_addr(pio_chan, &cb->next_raw_high, true);
 }
 
 void motor_calibrate(struct motor_cb *cb) {
@@ -143,7 +194,7 @@ void motor_record_pwm_interval(struct motor_cb *cb, uint32_t raw_pio_output) {
     cb->last_sensor_pwm_interval = invl;
 }
 
-void motor_record_pwm_high_time(struct motor_cb *cb, uint32_t raw_pio_output) {
+void motor_record_pwm_high_time(struct motor_cb *cb, uint32_t raw_pio_output, uint32_t timestamp) {
     uint32_t invl = cb->last_sensor_pwm_interval;
     invl <<= 12;
     if (invl == 0) {
@@ -163,11 +214,10 @@ void motor_record_pwm_high_time(struct motor_cb *cb, uint32_t raw_pio_output) {
     angle >>= 12;
     angle += cb->angle_offset;
     angle = CLAMP_ANGLE(angle);
-    motor_record_angle_meas(cb, angle);
+    motor_record_angle_meas(cb, angle, timestamp);
 }
 
-void motor_record_angle_meas(struct motor_cb *cb, fix15_t angle) {
-    uint32_t now = time_us_32();
+void motor_record_angle_meas(struct motor_cb *cb, fix15_t angle, uint32_t now) {
     int next_idx = cb->angle_buf_idx+1;
     if (next_idx == ANGLE_RING_BUF_SIZE) {
         next_idx = 0;
@@ -176,7 +226,6 @@ void motor_record_angle_meas(struct motor_cb *cb, fix15_t angle) {
     cb->measured_angles_ring_buf[next_idx].angle = angle;
     cb->angle_buf_idx = next_idx;
     cb->angle_meas_pending = true;
-    cb->output_update_pending = true;
 }
 
 // Using kbits effectively divides by 2^15 so, to get seconds,
@@ -185,7 +234,8 @@ void motor_record_angle_meas(struct motor_cb *cb, fix15_t angle) {
 
 void motor_process_angle_meas(struct motor_cb *cb) {
     int idx = cb->angle_buf_idx;
-    int prev_idx = (idx==0)?(ANGLE_RING_BUF_SIZE-1):(idx - 1);
+    int tap = 1;
+    int prev_idx = (idx-tap)&(ANGLE_RING_BUF_SIZE-1);
     fix15_t prev_angle = cb->measured_angles_ring_buf[prev_idx].angle;
     uint32_t prev_time = cb->measured_angles_ring_buf[prev_idx].time_us;
     if (prev_time == 0) {
@@ -284,14 +334,18 @@ void motor_update_output(struct motor_cb *cb) {
 }
 
 void motor_update(struct motor_cb *cb) {
-    if (cb->angle_meas_pending) {
-        cb->angle_meas_pending = false;
-        motor_process_angle_meas(cb);
+    int idx = cb->angle_buf_idx;
+    uint32_t last_reading_time = cb->measured_angles_ring_buf[idx].time_us;
+    uint32_t next_raw_high = cb->next_raw_high;
+    uint32_t next_timestamp = cb->next_timestamp;
+    if (next_timestamp == last_reading_time) {
+        return;
     }
 
-    if (cb->output_update_pending) {
-        cb->output_update_pending = false;
-        motor_update_output(cb);
+    uint32_t raw_pio_invl = drain_pio_fifo_non_block(pio0, cb->sm_invl);
+    if (raw_pio_invl) { 
+        motor_record_pwm_interval(cb, raw_pio_invl);
     }
-    //printf("\n");
+    motor_record_pwm_high_time(cb, next_raw_high, next_timestamp);
+    motor_process_angle_meas(cb);
 }

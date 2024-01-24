@@ -69,6 +69,9 @@ struct motor_cb {
     } measured_angles_ring_buf[ANGLE_RING_BUF_SIZE];
     int angle_buf_idx;
 
+    volatile uint32_t next_raw_high;
+    volatile uint32_t next_timestamp;
+
     bool angle_meas_pending;
     bool output_update_pending;
 };
@@ -77,8 +80,8 @@ void motor_global_init(PIO p);
 void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_C, uint pin_pwm_in);
 void motor_calibrate(struct motor_cb *cb);
 void motor_record_pwm_interval(struct motor_cb *cb, uint32_t raw_pio_output);
-void motor_record_pwm_high_time(struct motor_cb *cb, uint32_t raw_pio_output);
-void motor_record_angle_meas(struct motor_cb *cb, fix15_t angle);
+void motor_record_pwm_high_time(struct motor_cb *cb, uint32_t raw_pio_output, uint32_t timestamp);
+void motor_record_angle_meas(struct motor_cb *cb, fix15_t angle, uint32_t timestamp);
 void motor_process_angle_meas(struct motor_cb *cb);
 void motor_set_pwms(struct motor_cb *cb, fix15_t drive_angle);
 void motor_update_output(struct motor_cb *cb);
