@@ -4,8 +4,8 @@
 
 #define MOTOR_NUM_POLES 22
 
-// PWM_TOP = 6200 gives roughly 20kHz.
-#define PWM_TOP 6200
+// PWM_TOP = 3100 gives roughly 40kHz.
+#define PWM_TOP 3100
 #define LUT_LEN 4096
 static u_int16_t pwm_lut[LUT_LEN];
 
