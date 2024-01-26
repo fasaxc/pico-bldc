@@ -265,15 +265,60 @@ void motor_process_angle_meas(struct motor_cb *cb) {
         //  printf("\n");
     // }  
 
-    cb->estimated_velocity = est_v;
-
     fix15_t v_error = -(cb->target_velocity - est_v);
     cb->output_throttle += v_error * fix15c(0.02);
-    if (cb->output_throttle > fix15c(1)) {
-        cb->output_throttle = fix15c(1);
-    } else if (cb->output_throttle < fix15c(-1)) {
-        cb->output_throttle = fix15c(-1);
+#define MAX_THROTTLE fix15c(0.5)
+    if (cb->output_throttle > MAX_THROTTLE) {
+        cb->output_throttle = MAX_THROTTLE;
+    } else if (cb->output_throttle < -MAX_THROTTLE) {
+        cb->output_throttle = -MAX_THROTTLE;
     }
+
+    cb->last_pole_angle = current_angle * (MOTOR_NUM_POLES/2);
+    cb->last_angle_upd_time = current_time;
+    cb->est_pole_v = est_v * (MOTOR_NUM_POLES/2);
+    if (cb->output_throttle < 0) {
+        cb->drive_angle_offset = fix15c(0.25);
+    } else if (cb->output_throttle > 0) {
+        cb->drive_angle_offset = fix15c(-0.25);
+    } else {
+        cb->drive_angle_offset = 0;
+    }
+}
+
+void motor_update(struct motor_cb *cb) {
+    int idx = cb->angle_buf_idx;
+    uint32_t last_reading_time = cb->measured_angles_ring_buf[idx].time_us;
+    uint32_t next_raw_high = cb->next_raw_high;
+    uint32_t next_timestamp = cb->next_timestamp;
+    if (next_timestamp == last_reading_time) {
+        return;
+    }
+
+    uint32_t raw_pio_invl = drain_pio_fifo_non_block(pio0, cb->sm_invl);
+    if (raw_pio_invl) { 
+        motor_record_pwm_interval(cb, raw_pio_invl);
+    }
+    motor_record_pwm_high_time(cb, next_raw_high, next_timestamp);
+    motor_process_angle_meas(cb);
+}
+
+// Nature of the PWM signal means we're always 1ms behind.
+#define READING_DELAY_US 1000
+
+void motor_update_output(struct motor_cb *cb) {
+    uint32_t now = time_us_32();
+    uint32_t us_since_reading = now - cb->last_angle_upd_time + READING_DELAY_US;
+    fix15_t s_since_reading = USEC_TO_FIX15_S(us_since_reading);
+    fix15_t pole_angle_est = cb->last_pole_angle + (cb->est_pole_v * s_since_reading);
+    //print_fix15("s", s_since_reading);
+    //print_fix15("pv", cb->est_pole_v);
+    //print_fix15("npa", pole_angle_est);
+    fix15_t drive_angle = pole_angle_est+cb->drive_angle_offset;
+    drive_angle = CLAMP_ANGLE(drive_angle);
+    motor_set_pwms(cb, drive_angle);
+    //motor_update_output_old(cb);
+    //printf("\n");
 }
 
 void motor_set_pwms(struct motor_cb *cb, fix15_t drive_angle) {
@@ -296,56 +341,4 @@ void motor_set_pwms(struct motor_cb *cb, fix15_t drive_angle) {
     pwm_set_chan_level(cb->pwm_slice_a, cb->pwm_chan_a, duty_a);
     pwm_set_chan_level(cb->pwm_slice_b, cb->pwm_chan_b, duty_b);
     pwm_set_chan_level(cb->pwm_slice_c, cb->pwm_chan_c, duty_c);
-}
-
-// Nature of the PWM signal means we're always 1ms behind.
-#define READING_DELAY_US 1000
-void motor_update_output(struct motor_cb *cb) {
-    // Estimate current position of the motor given time since 
-    // last reading and calculated velocity.
-    int idx = cb->angle_buf_idx;
-    fix15_t last_reading_angle = cb->measured_angles_ring_buf[idx].angle;
-    uint32_t last_reading_time = cb->measured_angles_ring_buf[idx].time_us;
-    uint32_t now = time_us_32();
-    uint32_t us_since_reading = now - last_reading_time + READING_DELAY_US;
-    fix15_t s_since_reading = USEC_TO_FIX15_S(us_since_reading);
-    fix15_t angle_est = last_reading_angle + cb->estimated_velocity * s_since_reading;
-    
-    static int n;
-    angle_est = CLAMP_ANGLE(angle_est);
-
-    // Multiply up by number of pole pairs to get the effective electrical
-    // "angle". 
-    fix15_t meas_pole_angle = angle_est*(MOTOR_NUM_POLES/2);
-    fix15_t drive_angle = meas_pole_angle;
-    if (cb->output_throttle < 0) {
-        drive_angle += fix15c(0.25);
-    } else if (cb->output_throttle > 0) {
-        drive_angle -= fix15c(0.25);
-    }
-    drive_angle = CLAMP_ANGLE(drive_angle);
-
-    //if ((n++ % 1) == 0) {
-        // print_fix15("ma", meas_pole_angle);
-        // print_fix15("dra", drive_angle);
-    //}
-
-    motor_set_pwms(cb, drive_angle);
-}
-
-void motor_update(struct motor_cb *cb) {
-    int idx = cb->angle_buf_idx;
-    uint32_t last_reading_time = cb->measured_angles_ring_buf[idx].time_us;
-    uint32_t next_raw_high = cb->next_raw_high;
-    uint32_t next_timestamp = cb->next_timestamp;
-    if (next_timestamp == last_reading_time) {
-        return;
-    }
-
-    uint32_t raw_pio_invl = drain_pio_fifo_non_block(pio0, cb->sm_invl);
-    if (raw_pio_invl) { 
-        motor_record_pwm_interval(cb, raw_pio_invl);
-    }
-    motor_record_pwm_high_time(cb, next_raw_high, next_timestamp);
-    motor_process_angle_meas(cb);
 }

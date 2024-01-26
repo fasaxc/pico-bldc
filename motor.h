@@ -57,6 +57,10 @@ struct motor_cb {
     uint pwm_chan_a, pwm_chan_b, pwm_chan_c;
 
     fix15_t estimated_velocity; // Revs/sec
+    fix15_t est_pole_v;
+    fix15_t last_pole_angle;
+    uint32_t last_angle_upd_time;
+    fix15_t drive_angle_offset;
     //fix15_t estimated_accel;    // Revs/sec sq
 
     fix15_t output_throttle;    // -1.0 to 1.0
