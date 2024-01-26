@@ -174,12 +174,12 @@ int main()
         // Read buttons (which are pull-downs) and adjust target speed accordingly.
         if (!gpio_get(PIN_BUTT_A) && m.target_velocity > -20) {
             m.target_velocity -= fix15c(0.005);
-            print_fix15("v=", m.target_velocity);
+            print_fix15("v", m.target_velocity);
             printf("\n");
         }
         if (!gpio_get(PIN_BUTT_B) && m.target_velocity < 20) {
             m.target_velocity += fix15c(0.005);
-            print_fix15("v=", m.target_velocity);
+            print_fix15("v", m.target_velocity);
             printf("\n");
         }
     }

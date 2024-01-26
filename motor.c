@@ -267,7 +267,7 @@ void motor_process_angle_meas(struct motor_cb *cb) {
 
     fix15_t v_error = -(cb->target_velocity - est_v);
     cb->output_throttle += v_error * fix15c(0.02);
-#define MAX_THROTTLE fix15c(0.5)
+#define MAX_THROTTLE fix15c(1)
     if (cb->output_throttle > MAX_THROTTLE) {
         cb->output_throttle = MAX_THROTTLE;
     } else if (cb->output_throttle < -MAX_THROTTLE) {
