@@ -213,7 +213,7 @@ void motor_record_pwm_high_time(struct motor_cb *cb, uint32_t raw_pio_output, ui
     //print_fix15("raw", angle);
     angle >>= 12;
     angle += cb->angle_offset;
-    angle = CLAMP_ANGLE(angle);
+    angle = clamp_angle(angle);
     motor_record_angle_meas(cb, angle, timestamp);
 }
 
@@ -315,7 +315,7 @@ void motor_update_output(struct motor_cb *cb) {
     //print_fix15("pv", cb->est_pole_v);
     //print_fix15("npa", pole_angle_est);
     fix15_t drive_angle = pole_angle_est+cb->drive_angle_offset;
-    drive_angle = CLAMP_ANGLE(drive_angle);
+    drive_angle = clamp_angle(drive_angle);
     motor_set_pwms(cb, drive_angle);
     //motor_update_output_old(cb);
     //printf("\n");

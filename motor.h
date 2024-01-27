@@ -42,7 +42,11 @@ static inline void print_fix15(char *msg, fix15_t v) {
     printf("%s=%+f ", msg, (float)v);
 }
 
-#define CLAMP_ANGLE(a) ((a+1000) - (int)(a+1000))
+static inline fix15_t clamp_angle(fix15_t a) {
+    uint32_t au32 = *(uint32_t*)(&a);
+    au32 &= 0x7fff;
+    return *(fix15_t*)(&au32);
+}
 
 #define ANGLE_RING_BUF_SIZE 4
 struct motor_cb {
@@ -56,7 +60,6 @@ struct motor_cb {
     uint pwm_slice_a, pwm_slice_b, pwm_slice_c;
     uint pwm_chan_a, pwm_chan_b, pwm_chan_c;
 
-    fix15_t estimated_velocity; // Revs/sec
     fix15_t est_pole_v;
     fix15_t last_pole_angle;
     uint32_t last_angle_upd_time;
