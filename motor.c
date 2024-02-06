@@ -123,10 +123,12 @@ void motor_calibrate(struct motor_cb *cb) {
 
     // Get some values to make sure the PWM signal is working...
     printf("Starting calibration...\n");
+    uint32_t invl;
     for (int i=0; i<2; i++) {
         printf("Wait on interval...\n");
         uint32_t v = pio_sm_get_blocking(pio, cb->sm_invl);
         printf("Raw value: %d\n", v);
+        invl = 0xffffffffu - v;
         printf("Wait on high time...\n");
         v = pio_sm_get_blocking(pio, cb->sm_high);
         printf("Raw value: %d\n", v);
@@ -149,7 +151,10 @@ void motor_calibrate(struct motor_cb *cb) {
 
         // Load any updated PWM interval from the PIO.  The interval
         // is updated every other PWM cycle so we don't wait for it.
-        invl = 0xffffffff - drain_pio_fifo_non_block(pio, cb->sm_invl);
+        uint32_t new_invl = drain_pio_fifo_non_block(pio, cb->sm_invl);
+        if (new_invl) {
+            invl = 0xffffffffu - new_invl;
+        } 
         cb->last_sensor_pwm_interval = invl;
         one_clock = (invl << fp_bits) / (16+4095+8);
         half_clock = one_clock / 2;
@@ -164,7 +169,7 @@ void motor_calibrate(struct motor_cb *cb) {
         // magnet.
         meas_pole_angle = (wheel_angle * MOTOR_NUM_POLES/2) % 4096;
 
-        if ((pole_angle % 16) == 0) {
+        if ((pole_angle % 8) == 0) {
             printf("%04d %04d\n", pole_angle, wheel_angle);
         }
 
