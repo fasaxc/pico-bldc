@@ -27,8 +27,7 @@ pico_sdk_init()
 
 add_executable(pico-bldc pico-bldc.c motor.c)
 
-pico_generate_pio_header(pico-bldc ${CMAKE_CURRENT_LIST_DIR}/pwmhigh.pio)
-pico_generate_pio_header(pico-bldc ${CMAKE_CURRENT_LIST_DIR}/pwminvl.pio)
+pico_generate_pio_header(pico-bldc ${CMAKE_CURRENT_LIST_DIR}/pwm.pio)
 
 pico_set_program_name(pico-bldc "pico-bldc")
 pico_set_program_version(pico-bldc "0.1")

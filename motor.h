@@ -13,8 +13,7 @@
 #include "hardware/i2c.h"
 #include "pico/critical_section.h"
 #include "hardware/pio.h"
-#include "pwmhigh.pio.h"
-#include "pwminvl.pio.h"
+#include "pwm.pio.h"
 
 #include <stdfix.h>
 // Make VSCode intellisense happy.
@@ -54,8 +53,7 @@ struct motor_cb {
     fix15_t angle_offset;     // Calibration offset to align poles.
 
     PIO pio;
-    uint sm_high;
-    uint sm_invl;
+    uint sm_pwm;
 
     uint pwm_slice_a, pwm_slice_b, pwm_slice_c;
     uint pwm_chan_a, pwm_chan_b, pwm_chan_c;
@@ -67,8 +65,6 @@ struct motor_cb {
     //fix15_t estimated_accel;    // Revs/sec sq
 
     fix15_t output_throttle;    // -1.0 to 1.0
-    
-    fix15_t last_sensor_pwm_interval;
 
     struct {
         uint32_t time_us;
@@ -86,8 +82,7 @@ struct motor_cb {
 void motor_global_init(PIO p);
 void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_C, uint pin_pwm_in);
 void motor_calibrate(struct motor_cb *cb);
-void motor_record_pwm_interval(struct motor_cb *cb, uint32_t raw_pio_output);
-void motor_record_pwm_high_time(struct motor_cb *cb, uint32_t raw_pio_output, uint32_t timestamp);
+void motor_record_pwm_reading(struct motor_cb *cb, uint32_t raw_pio_output, uint32_t timestamp);
 void motor_record_angle_meas(struct motor_cb *cb, fix15_t angle, uint32_t timestamp);
 void motor_process_angle_meas(struct motor_cb *cb);
 void motor_set_pwms(struct motor_cb *cb, fix15_t drive_angle);

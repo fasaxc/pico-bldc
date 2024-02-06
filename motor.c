@@ -10,8 +10,7 @@
 static u_int16_t pwm_lut[LUT_LEN];
 
 static PIO pio;
-static uint pio_offset_high;
-static uint pio_offset_invl;
+static uint pio_offset_pwm;
 
 void motor_global_init(PIO p) {
     // Init LUT for sine.
@@ -28,8 +27,7 @@ void motor_global_init(PIO p) {
     // Load PIO programs to measure PWM interval and high time
     // from the motor position sensor.
     pio = p;
-    pio_offset_invl = pio_add_program(pio, &pwminvl_program);
-    pio_offset_high = pio_add_program(pio, &pwmhigh_program);
+    pio_offset_pwm = pio_add_program(pio, &pwm_program);
 }
 
 void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_c, uint pin_pwm_in) {
@@ -61,13 +59,10 @@ void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_c, uint pi
 
     // Set up the PIO state machines.  We can use the same programs
     // for every motor instance.
-    cb->sm_invl = pio_claim_unused_sm(pio, true);
-    printf("Init interval PIO on SM %d pin %d\n", cb->sm_invl, pin_pwm_in);
-    pwminvl_program_init(pio, cb->sm_invl, pio_offset_invl, pin_pwm_in);
-    cb->sm_high = pio_claim_unused_sm(pio, true);
-    printf("Init high time PIO on SM %d pin %d\n", cb->sm_high, pin_pwm_in);
-    pwmhigh_program_init(pio, cb->sm_high, pio_offset_high, pin_pwm_in);
-
+    cb->sm_pwm = pio_claim_unused_sm(pio, true);
+    printf("Init PIO on SM %d pin %d\n", cb->sm_pwm, pin_pwm_in);
+    pwm_program_init(pio, cb->sm_pwm, pio_offset_pwm, pin_pwm_in);
+    
     // Set up a pair of DMAs, the first to copy HIGH times out of the PIO,
     // the second to write a timestamp.  Chain them to each other so that 
     // they ping-pong.
@@ -81,9 +76,9 @@ void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_c, uint pi
         channel_config_set_write_increment(&c, false);
         int dreq;
         if (pio == pio0) {
-            dreq = DREQ_PIO0_RX0 + cb->sm_high;
+            dreq = DREQ_PIO0_RX0 + cb->sm_pwm;
         } else {
-            dreq = DREQ_PIO1_RX0 + cb->sm_high;
+            dreq = DREQ_PIO1_RX0 + cb->sm_pwm;
         }
         channel_config_set_dreq(&c, dreq); 
         channel_config_set_chain_to(&c, time_chan);    
@@ -92,7 +87,7 @@ void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_c, uint pi
             pio_chan,               // Channel to be configured
             &c,                     // The configuration we just created
             NULL,                   // Write address
-            &pio->rxf[cb->sm_high], // Read address
+            &pio->rxf[cb->sm_pwm], // Read address
             1,             // Number of transfers.
             false          // Don't start yet.
         );
@@ -123,19 +118,12 @@ void motor_calibrate(struct motor_cb *cb) {
 
     // Get some values to make sure the PWM signal is working...
     printf("Starting calibration...\n");
-    uint32_t invl;
     for (int i=0; i<2; i++) {
-        printf("Wait on interval...\n");
-        uint32_t v = pio_sm_get_blocking(pio, cb->sm_invl);
-        printf("Raw value: %d\n", v);
-        invl = 0xffffffffu - v;
-        printf("Wait on high time...\n");
-        v = pio_sm_get_blocking(pio, cb->sm_high);
-        printf("Raw value: %d\n", v);
-    }
-    while (!pio_sm_get_rx_fifo_level(pio, cb->sm_invl)) {
-        // Wait for the next interval measurement to arrive so
-        // we'll definitely load it on the first loop below.
+        printf("Wait on PWM reading...\n");
+        uint32_t v = pio_sm_get_blocking(pio, cb->sm_pwm);
+        uint32_t high = 0xffff - (v>>16);
+        uint32_t invl = 0xffff - (v & 0xffff);
+        printf("%08x -> high=%06d invl=%06d\n", v, high, invl);
     }
 
     // Determine angle offset of the motor.  Do a slow round of open loop 
@@ -145,19 +133,12 @@ void motor_calibrate(struct motor_cb *cb) {
     uint32_t angle_offset = 2048;
     uint32_t meas_pole_angle = 0;
     for (pole_angle = 0; pole_angle < 256; pole_angle++) {
-        uint32_t high, invl, one_clock, half_clock;
         // Load the PWM high time from the PIO.
-        high = 0xffffffff - drain_pio_fifo_blocking(pio, cb->sm_high);
-
-        // Load any updated PWM interval from the PIO.  The interval
-        // is updated every other PWM cycle so we don't wait for it.
-        uint32_t new_invl = drain_pio_fifo_non_block(pio, cb->sm_invl);
-        if (new_invl) {
-            invl = 0xffffffffu - new_invl;
-        } 
-        cb->last_sensor_pwm_interval = invl;
-        one_clock = (invl << fp_bits) / (16+4095+8);
-        half_clock = one_clock / 2;
+        uint32_t raw = drain_pio_fifo_blocking(pio, cb->sm_pwm);
+        uint32_t high = 0xffff - (raw>>16);
+        uint32_t invl = 0xffff - (raw & 0xffff);
+        uint32_t one_clock = (invl << fp_bits) / (16+4095+8);
+        uint32_t half_clock = one_clock / 2;
 
         // Convert to fixed point for better precision.
         high = high << fp_bits;
@@ -194,19 +175,11 @@ void motor_calibrate(struct motor_cb *cb) {
     print_fix15("Angle offset", cb->angle_offset);
 }
 
-void motor_record_pwm_interval(struct motor_cb *cb, uint32_t raw_pio_output) {
-    uint32_t invl = 0xffffffff - raw_pio_output;
-    cb->last_sensor_pwm_interval = invl;
-}
-
-void motor_record_pwm_high_time(struct motor_cb *cb, uint32_t raw_pio_output, uint32_t timestamp) {
-    uint32_t invl = cb->last_sensor_pwm_interval;
-    invl <<= 12;
-    if (invl == 0) {
-        return;
-    }
-    uint32_t high = 0xffffffff - raw_pio_output;
+void motor_record_pwm_reading(struct motor_cb *cb, uint32_t raw_pio_output, uint32_t timestamp) {
+    uint32_t high = 0xffff - (raw_pio_output>>16);
     high <<= 12;
+    uint32_t invl = 0xffff - (raw_pio_output & 0xffff);
+    invl <<= 12;
     uint32_t one_clock = invl / 
         (16/*start bits*/ + 4095/*data bits*/ + 8/*end bits*/);
     // Integer division truncates; add half a clock to get
@@ -294,17 +267,12 @@ void motor_process_angle_meas(struct motor_cb *cb) {
 void motor_update(struct motor_cb *cb) {
     int idx = cb->angle_buf_idx;
     uint32_t last_reading_time = cb->measured_angles_ring_buf[idx].time_us;
-    uint32_t next_raw_high = cb->next_raw_high;
+    uint32_t next_raw_pwm = cb->next_raw_high;
     uint32_t next_timestamp = cb->next_timestamp;
     if (next_timestamp == last_reading_time) {
         return;
     }
-
-    uint32_t raw_pio_invl = drain_pio_fifo_non_block(pio0, cb->sm_invl);
-    if (raw_pio_invl) { 
-        motor_record_pwm_interval(cb, raw_pio_invl);
-    }
-    motor_record_pwm_high_time(cb, next_raw_high, next_timestamp);
+    motor_record_pwm_reading(cb, next_raw_pwm, next_timestamp);
     motor_process_angle_meas(cb);
 }
 
