@@ -80,6 +80,7 @@ struct motor_cb {
 };
 
 void motor_global_init(PIO p);
+void motor_enable_pwms();
 void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_C, uint pin_pwm_in);
 void motor_calibrate(struct motor_cb *cb);
 void motor_record_pwm_reading(struct motor_cb *cb, uint32_t raw_pio_output, uint32_t timestamp);

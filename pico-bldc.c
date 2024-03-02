@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <math.h>
 #include "pico/stdlib.h"
+#include "pico/divider.h"
 #include "pico/i2c_slave.h"
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
@@ -14,31 +15,39 @@
 #include "motor.h" // Must be last; includes stdfix.h, conflicts with SDK
 
 // GPIO defines
-#define PIN_DEBUG 0
-#define PIN_PWM_IN 18
+#define PIN_DEBUG 6
 
-#define PIN_MOTOR_A 16
-#define PIN_MOTOR_B 15
-#define PIN_MOTOR_C 14
+#define PIN_PWM0_IN 4
+#define PIN_PWM1_IN 5
+#define PIN_PWM2_IN 26
+#define PIN_PWM3_IN 22
 
-#define PIN_BUTT_A 3
-#define PIN_BUTT_B 5
+#define PIN_MOTOR_NRESET 28
+#define PIN_MOTOR_NFAULT 27
 
-// SPI Defines
-// We are going to use SPI 0, and allocate it to the following GPIO pins
-// Pins can be changed, see the GPIO function select table in the datasheet for information on GPIO assignments
-// #define SPI_PORT spi0
-// #define PIN_MISO 16
-// #define PIN_CS   17
-// #define PIN_SCK  18
-// #define PIN_MOSI 19
+#define PIN_MOT0_A 10
+#define PIN_MOT0_B 12
+#define PIN_MOT0_C 11
+
+#define PIN_MOT1_A 13
+#define PIN_MOT1_B 14
+#define PIN_MOT1_C 15
+
+#define PIN_MOT2_A 16
+#define PIN_MOT2_B 17
+#define PIN_MOT2_C 18
+
+#define PIN_MOT3_A 19
+#define PIN_MOT3_B 20
+#define PIN_MOT3_C 21
+
+#define PIN_BUTT_A 7
+#define PIN_BUTT_B 8
 
 // I2C defines
-// This example will use I2C0 on GPIO8 (SDA) and GPIO9 (SCL) running at 400KHz.
-// Pins can be changed, see the GPIO function select table in the datasheet for information on GPIO assignments
 #define I2C_PORT i2c0
-#define I2C_SDA 8
-#define I2C_SCL 9
+#define I2C_SDA 0   
+#define I2C_SCL 1
 #define I2C_SLAVE_ADDRESS 0x42
 
 static struct
@@ -115,6 +124,8 @@ int main()
 {
     stdio_init_all();
 
+    printf("Pico-BLDC booting...\n");
+
     // Init "debug" pin, which we toggle for reading by the
     // oscilloscope.
     gpio_init(PIN_DEBUG);
@@ -128,6 +139,15 @@ int main()
     gpio_init(PIN_BUTT_B);
     gpio_set_dir(PIN_BUTT_B, GPIO_IN);
     gpio_pull_up(PIN_BUTT_B);
+
+    // Shared motor reset/fault pins
+    gpio_init(PIN_MOTOR_NFAULT);
+    gpio_set_dir(PIN_MOTOR_NFAULT, GPIO_IN);
+    gpio_pull_up(PIN_MOTOR_NFAULT);
+
+    gpio_init(PIN_MOTOR_NRESET);
+    gpio_set_dir(PIN_MOTOR_NRESET, GPIO_OUT);
+    gpio_put(PIN_MOTOR_NRESET, 1); // high = run
 
     // I2C Initialisation.
     critical_section_init(&i2c_reg_lock);
@@ -143,16 +163,41 @@ int main()
     // - Sets up the motor sine() LUT.
     motor_global_init(pio0);
 
+    uint32_t last_print = 0;
     while (gpio_get(PIN_BUTT_A)) {
         // Wait for the (active low) button to be pressed.
+        uint32_t now = time_us_32();
+        if ((now - last_print) > 1000000) {
+            printf("Waiting for button...\n");
+            last_print = now;
+        } 
     }
 
     // Start closed-loop control.
-    struct motor_cb m = {};
-    motor_init(&m, PIN_MOTOR_A, PIN_MOTOR_B, PIN_MOTOR_C, PIN_PWM_IN);
-    motor_calibrate(&m);
+    struct motor_cb m[4] = {};
+
+    // FIXME Temporary code to drive all motor pins low.
+    for (int pin = 10; pin <= 21; pin++) {
+        gpio_init(pin);
+        gpio_set_dir(pin, 1);
+        gpio_put(pin, 0);
+    }
+
+    motor_init(&m[0], PIN_MOT0_A, PIN_MOT0_B, PIN_MOT0_C, PIN_PWM0_IN);
+    motor_init(&m[1], PIN_MOT1_A, PIN_MOT1_B, PIN_MOT1_C, PIN_PWM1_IN);
+    motor_init(&m[2], PIN_MOT2_A, PIN_MOT2_B, PIN_MOT2_C, PIN_PWM2_IN);
+    motor_init(&m[3], PIN_MOT3_A, PIN_MOT3_B, PIN_MOT3_C, PIN_PWM3_IN);
+    motor_enable_pwms();
+    
+    motor_calibrate(&m[0]);
+    motor_calibrate(&m[1]);
+    motor_calibrate(&m[2]);
+    motor_calibrate(&m[3]);
 
     int n = 0;
+    uint num_faults = 0;
+    uint32_t last_fault_report = 0;
+    uint32_t last_speed_report = 0;
     while (true) {
         if (i2c_reg_get(I2C_REG_CTRL) & 1) {
             // I2C control is enabled.
@@ -161,26 +206,53 @@ int main()
             if (m1 > 127) {
                 m1 -= 256;
             }
-            m.target_velocity = ((fix15_t)m1)/10;
+            m[2].target_velocity = ((fix15_t)m1)/10;
         }
 
         uint32_t start_time = time_us_32();
         while ((time_us_32()-start_time) < 1000) {
-            motor_update(&m);
-            motor_update_output(&m);
+            for (int m_out_idx = 0; m_out_idx<4; m_out_idx++) {
+                // Poll all four motors to see if they have updated sensor
+                // inputs.  If there's no update, this returns immediately
+                // so effectively, we prioritise sensor updates if there 
+                // are any, then default to updating outputs.
+                for (int m_upd_idx = 0; m_upd_idx<4; m_upd_idx++) {
+                    motor_update(&m[m_upd_idx]);
+                }
+                // Then update one motor per loop.
+                motor_update_output(&m[m_out_idx]);
+            }
             gpio_put(PIN_DEBUG, n++&1);
         }
 
         // Read buttons (which are pull-downs) and adjust target speed accordingly.
-        if (!gpio_get(PIN_BUTT_A) && m.target_velocity > -20) {
-            m.target_velocity -= fix15c(0.005);
-            print_fix15("v", m.target_velocity);
+        if (!gpio_get(PIN_BUTT_A) && m[2].target_velocity > -20) {
+            m[0].target_velocity -= fix15c(0.005);
+            m[1].target_velocity -= fix15c(0.005);
+            m[2].target_velocity -= fix15c(0.005);
+            m[3].target_velocity -= fix15c(0.005);
+            print_fix15("v", m[2].target_velocity);
             printf("\n");
         }
-        if (!gpio_get(PIN_BUTT_B) && m.target_velocity < 20) {
-            m.target_velocity += fix15c(0.005);
-            print_fix15("v", m.target_velocity);
+        if (!gpio_get(PIN_BUTT_B) && m[2].target_velocity < 20) {
+            m[0].target_velocity += fix15c(0.005);
+            m[1].target_velocity += fix15c(0.005);
+            m[2].target_velocity += fix15c(0.005);
+            m[3].target_velocity += fix15c(0.005);
+            print_fix15("v", m[2].target_velocity);
             printf("\n");
+        }
+        if (!gpio_get(PIN_MOTOR_NFAULT)) {
+            num_faults++;
+            if ((time_us_32() - last_fault_report) > 1000000) {
+                printf("Motor fault (count=%d)!\n", num_faults);
+                last_fault_report = time_us_32();
+            }
+        }
+        if ((time_us_32() - last_speed_report) > 1000000) {
+            print_fix15("pv", m[2].est_pole_v/11);
+            printf("\n");
+            last_speed_report = time_us_32();
         }
     }
 

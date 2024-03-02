@@ -26,6 +26,10 @@
       "utility": "c",
       "stdfix.h": "c",
       "pwminvl.pio.h": "c",
-      "random": "c"
+      "random": "c",
+      "gpio.h": "c",
+      "stdlib.h": "c",
+      "i2c_slave.h": "c",
+      "math.h": "c"
     },
 }

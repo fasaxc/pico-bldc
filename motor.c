@@ -12,6 +12,8 @@ static u_int16_t pwm_lut[LUT_LEN];
 static PIO pio;
 static uint pio_offset_pwm;
 
+static uint32_t pwm_slice_mask;
+
 void motor_global_init(PIO p) {
     // Init LUT for sine.
 #define PWM_OFFSET 0.032f
@@ -28,6 +30,11 @@ void motor_global_init(PIO p) {
     // from the motor position sensor.
     pio = p;
     pio_offset_pwm = pio_add_program(pio, &pwm_program);
+}
+
+void motor_enable_pwms() {
+    printf("Enabling PWM slices: %x\n", pwm_slice_mask);
+    pwm_set_mask_enabled(pwm_slice_mask);
 }
 
 void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_c, uint pin_pwm_in) {
@@ -52,10 +59,10 @@ void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_c, uint pi
     cb->pwm_chan_c = pwm_gpio_to_channel(pin_c);
     pwm_init(cb->pwm_slice_c, &pwm_c, false);
 
-    // Enable all PWMs together so that they start in phase.
-    pwm_set_mask_enabled((1<<cb->pwm_slice_a) | 
-                         (1<<cb->pwm_slice_b) |  
-                         (1<<cb->pwm_slice_c));
+    // Record which PWMs we're using so they can be enabled in sync.
+    pwm_slice_mask |= ((1<<cb->pwm_slice_a) | 
+                       (1<<cb->pwm_slice_b) |  
+                       (1<<cb->pwm_slice_c));
 
     // Set up the PIO state machines.  We can use the same programs
     // for every motor instance.
@@ -173,12 +180,21 @@ void motor_calibrate(struct motor_cb *cb) {
 
     cb->angle_offset = ((fix15_t)angle_offset)/4096/(MOTOR_NUM_POLES/2);
     print_fix15("Angle offset", cb->angle_offset);
+
+    pwm_set_chan_level(cb->pwm_slice_a, cb->pwm_chan_a, 0);
+    pwm_set_chan_level(cb->pwm_slice_b, cb->pwm_chan_b, 0);
+    pwm_set_chan_level(cb->pwm_slice_c, cb->pwm_chan_c, 0);
 }
 
 void motor_record_pwm_reading(struct motor_cb *cb, uint32_t raw_pio_output, uint32_t timestamp) {
     uint32_t high = 0xffff - (raw_pio_output>>16);
     high <<= 12;
     uint32_t invl = 0xffff - (raw_pio_output & 0xffff);
+    if ((invl < 30000) || (invl > 45000)) {
+        // 38000 is typical.
+        printf("Bad invl! %d / %d\n", high, invl);
+        return;
+    }
     invl <<= 12;
     uint32_t one_clock = invl / 
         (16/*start bits*/ + 4095/*data bits*/ + 8/*end bits*/);
@@ -186,6 +202,11 @@ void motor_record_pwm_reading(struct motor_cb *cb, uint32_t raw_pio_output, uint
     // round-to-nearest.
     uint32_t half_clock = one_clock / 2; 
     uint32_t clocks = (high+half_clock)/one_clock; 
+    if (clocks < 13) {
+        // 16 should be the minimum, less than means "error".
+        printf("PWM error! %d / %d\n", high, invl);
+        return;
+    }
     //printf("h=%d i=%d ", high, invl);
     fix15_t angle = (fix15_t)clocks - fix15c(16);
     //print_fix15("raw", angle);
