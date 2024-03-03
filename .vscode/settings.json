@@ -30,6 +30,7 @@
       "gpio.h": "c",
       "stdlib.h": "c",
       "i2c_slave.h": "c",
-      "math.h": "c"
+      "math.h": "c",
+      "compare": "c"
     },
 }

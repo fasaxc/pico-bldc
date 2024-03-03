@@ -37,6 +37,15 @@ static inline fix15_t kbits(uint32_t x) {
     return u.f;
 } 
 
+static inline uint32_t bitsk(fix15_t x) {
+    union {
+        fix15_t f;
+        uint32_t y;
+    } u;
+    u.f = x;
+    return u.y;
+} 
+
 static inline void print_fix15(char *msg, fix15_t v) {
     printf("%s=%+f ", msg, (float)v);
 }
@@ -83,6 +92,9 @@ void motor_global_init(PIO p);
 void motor_enable_pwms();
 void motor_init(struct motor_cb *cb, uint pin_a, uint pin_b, uint pin_C, uint pin_pwm_in);
 void motor_calibrate(struct motor_cb *cb);
+uint16_t motor_get_calibration(struct motor_cb *cb);
+void motor_restore_calibration(struct motor_cb *cb, uint16_t);
+void motor_set_v(struct motor_cb *cb, int16_t);
 void motor_record_pwm_reading(struct motor_cb *cb, uint32_t raw_pio_output, uint32_t timestamp);
 void motor_record_angle_meas(struct motor_cb *cb, fix15_t angle, uint32_t timestamp);
 void motor_process_angle_meas(struct motor_cb *cb);

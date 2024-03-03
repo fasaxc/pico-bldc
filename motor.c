@@ -165,9 +165,9 @@ void motor_calibrate(struct motor_cb *cb) {
         u_int16_t duty_b = pwm_lut[(pole_angle + (LUT_LEN/3)) % LUT_LEN];
         u_int16_t duty_c = pwm_lut[(pole_angle + (2*LUT_LEN/3)) % LUT_LEN];
 
-        pwm_set_chan_level(cb->pwm_slice_a, cb->pwm_chan_a, duty_a);
-        pwm_set_chan_level(cb->pwm_slice_b, cb->pwm_chan_b, duty_b);
-        pwm_set_chan_level(cb->pwm_slice_c, cb->pwm_chan_c, duty_c);
+        pwm_set_chan_level(cb->pwm_slice_a, cb->pwm_chan_a, duty_a/2);
+        pwm_set_chan_level(cb->pwm_slice_b, cb->pwm_chan_b, duty_b/2);
+        pwm_set_chan_level(cb->pwm_slice_c, cb->pwm_chan_c, duty_c/2);
     }
 
     angle_offset = (pole_angle - meas_pole_angle) % 4096;
@@ -175,15 +175,33 @@ void motor_calibrate(struct motor_cb *cb) {
     pwm_set_chan_level(cb->pwm_slice_a, cb->pwm_chan_a, 0);
     pwm_set_chan_level(cb->pwm_slice_b, cb->pwm_chan_b, 0);
     pwm_set_chan_level(cb->pwm_slice_c, cb->pwm_chan_c, 0);
+    
     printf("Pole angle: %04d meas_pole_angle: %04d angle_offset: %04d\n", 
         pole_angle, meas_pole_angle, angle_offset);
 
     cb->angle_offset = ((fix15_t)angle_offset)/4096/(MOTOR_NUM_POLES/2);
     print_fix15("Angle offset", cb->angle_offset);
+}
 
-    pwm_set_chan_level(cb->pwm_slice_a, cb->pwm_chan_a, 0);
-    pwm_set_chan_level(cb->pwm_slice_b, cb->pwm_chan_b, 0);
-    pwm_set_chan_level(cb->pwm_slice_c, cb->pwm_chan_c, 0);
+uint16_t motor_get_calibration(struct motor_cb *cb) {
+    uint32_t angle_offset_bits = bitsk(cb->angle_offset);
+    // Offset should be <1, so it should fit in the bottom 15 bits.
+    return (uint16_t)angle_offset_bits;
+}
+
+void motor_restore_calibration(struct motor_cb *cb, uint16_t c) {
+    int16_t c_signed = (int16_t)c;
+    int32_t c_ext = c;
+    uint32_t angle_offset_bits = (uint32_t)(c_ext);
+    cb->angle_offset = kbits(angle_offset_bits);
+}
+
+void motor_set_v(struct motor_cb *cb, int16_t v) {
+    // If we just put the bits of an int16 into the low bits
+    // of a fix15_t then we'd get a range of -1.0 to 1.0.  Shift
+    // by 5 gives a range of -32 to 32 RPS.
+    int32_t v_ext = v << 5;
+    cb->target_velocity = kbits((uint32_t)v_ext);
 }
 
 void motor_record_pwm_reading(struct motor_cb *cb, uint32_t raw_pio_output, uint32_t timestamp) {
