@@ -164,8 +164,18 @@ int main()
     motor_global_init(pio0);
 
     uint32_t last_print = 0;
-    while (gpio_get(PIN_BUTT_A)) {
+    while (1) {
         // Wait for the (active low) button to be pressed.
+        if (!gpio_get(PIN_BUTT_A)) {
+            break;
+        }
+        int chr = getchar_timeout_us(0);
+        if (chr == '\r') {
+            break;
+        } else if (chr >= 0) {
+            printf("Unexpected char: %x\n", chr);
+        }
+
         uint32_t now = time_us_32();
         if ((now - last_print) > 1000000) {
             printf("Waiting for button...\n");
@@ -176,11 +186,15 @@ int main()
     // Start closed-loop control.
     struct motor_cb m[4] = {};
 
-    // FIXME Temporary code to drive all motor pins low.
-    for (int pin = 10; pin <= 21; pin++) {
-        gpio_init(pin);
-        gpio_set_dir(pin, 1);
-        gpio_put(pin, 0);
+    while (1) {
+        if (gpio_get(PIN_MOTOR_NFAULT)) {
+            break;
+        }
+        uint32_t now = time_us_32();
+        if ((now - last_print) > 1000000) {
+            printf("Motor fault; is motor power on?\n");
+            last_print = now;
+        } 
     }
 
     motor_init(&m[0], PIN_MOT0_A, PIN_MOT0_B, PIN_MOT0_C, PIN_PWM0_IN);
@@ -226,20 +240,21 @@ int main()
         }
 
         // Read buttons (which are pull-downs) and adjust target speed accordingly.
-        if (!gpio_get(PIN_BUTT_A) && m[2].target_velocity > -20) {
-            m[0].target_velocity -= fix15c(0.005);
-            m[1].target_velocity -= fix15c(0.005);
-            m[2].target_velocity -= fix15c(0.005);
-            m[3].target_velocity -= fix15c(0.005);
-            print_fix15("v", m[2].target_velocity);
+        int chr = getchar_timeout_us(0);
+        if ((!gpio_get(PIN_BUTT_A) || chr == '.') && m[3].target_velocity > -20) {
+            m[0].target_velocity -= fix15c(0.1);
+            m[1].target_velocity -= fix15c(0.2);
+            m[2].target_velocity -= fix15c(0.3);
+            m[3].target_velocity -= fix15c(0.4);
+            print_fix15("v", m[3].target_velocity);
             printf("\n");
         }
-        if (!gpio_get(PIN_BUTT_B) && m[2].target_velocity < 20) {
-            m[0].target_velocity += fix15c(0.005);
-            m[1].target_velocity += fix15c(0.005);
-            m[2].target_velocity += fix15c(0.005);
-            m[3].target_velocity += fix15c(0.005);
-            print_fix15("v", m[2].target_velocity);
+        if ((!gpio_get(PIN_BUTT_B) || chr == ',') && m[3].target_velocity < 20) {
+            m[0].target_velocity += fix15c(0.1);
+            m[1].target_velocity += fix15c(0.2);
+            m[2].target_velocity += fix15c(0.3);
+            m[3].target_velocity += fix15c(0.4);
+            print_fix15("v", m[3].target_velocity);
             printf("\n");
         }
         if (!gpio_get(PIN_MOTOR_NFAULT)) {
@@ -250,7 +265,7 @@ int main()
             }
         }
         if ((time_us_32() - last_speed_report) > 1000000) {
-            print_fix15("pv", m[2].est_pole_v/11);
+            print_fix15("pv", m[3].est_pole_v/11);
             printf("\n");
             last_speed_report = time_us_32();
         }
