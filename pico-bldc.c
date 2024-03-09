@@ -9,6 +9,7 @@
 #include "hardware/spi.h"
 #include "hardware/timer.h"
 #include "hardware/i2c.h"
+#include "pico/multicore.h"
 #include "pico/critical_section.h"
 #include "hardware/pio.h"
 
@@ -44,11 +45,25 @@
 #define PIN_BUTT_A 7
 #define PIN_BUTT_B 8
 
-// I2C defines
-#define I2C_PORT i2c0
-#define I2C_SDA 0   
-#define I2C_SCL 1
-#define I2C_SLAVE_ADDRESS 0x42
+// I2C defines, first the port where we act as peripheral.
+#define I2C_PERIPH_PORT i2c0
+#define I2C_PERIPH_SDA 0   
+#define I2C_PERIPH_SCL 1
+#define I2C_PERIPH_ADDR 0x42
+
+// I2C defines for the controler port, where we read the INA219.
+#define I2C_CONT_PORT i2c1
+#define I2C_CONT_SDA 2
+#define I2C_CONT_SCL 3
+
+#define I2C_INA219_ADDR 0x40
+#define INA219_REG_CONF    0
+#define INA219_REG_SHUNT_V 1
+#define INA219_REG_BUS_V   2
+#define INA219_REG_POWER   3
+#define INA219_REG_CURRENT 4
+#define INA219_REG_CALIB   5
+
 
 typedef uint16_t i2c_reg_t;
 
@@ -108,7 +123,7 @@ static inline void i2c_reg_set(enum I2CRegs num, i2c_reg_t value) {
 
 // Our handler is called from the I2C ISR, so it must complete quickly. Blocking calls /
 // printing to stdio may interfere with interrupt handling.
-static void i2c_slave_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
+static void i2c_periph_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
     switch (event) {
     case I2C_SLAVE_RECEIVE: // master has written some data
         uint8_t data = i2c_read_byte_raw(i2c);
@@ -145,11 +160,14 @@ static void i2c_slave_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
     }
 }
 
+void core1_entry();
+
 int main()
 {
     stdio_init_all();
 
     printf("Pico-BLDC booting...\n");
+    multicore_launch_core1(core1_entry);
 
     // Init "debug" pin, which we toggle for reading by the
     // oscilloscope.
@@ -176,12 +194,12 @@ int main()
 
     // I2C Initialisation.
     critical_section_init(&i2c_reg_lock);
-    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_SDA);
-    gpio_pull_up(I2C_SCL);
-    i2c_init(I2C_PORT, 100*1000);
-    i2c_slave_init(I2C_PORT, I2C_SLAVE_ADDRESS, &i2c_slave_handler);
+    gpio_set_function(I2C_PERIPH_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_PERIPH_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(I2C_PERIPH_SDA);
+    gpio_pull_up(I2C_PERIPH_SCL);
+    i2c_init(I2C_PERIPH_PORT, 100*1000);
+    i2c_slave_init(I2C_PERIPH_PORT, I2C_PERIPH_ADDR, &i2c_periph_handler);
 
     // Initialise global state for all motors.  This:
     // - Loads PIO programs.
@@ -331,4 +349,25 @@ calibrate:
     }
 
     return 0;
+}
+
+void core1_entry() {
+    printf("Second core booting...\n");
+    gpio_set_function(I2C_CONT_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_CONT_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(I2C_CONT_SDA);
+    gpio_pull_up(I2C_CONT_SCL);
+    i2c_init(I2C_CONT_PORT, 100*1000);
+
+#define INA219_R_SHUNT 0.05
+#define INA219_MAX_EXPECTED_CURRENT 6.0
+#define INA219_CURRENT_LSB  (INA219_MAX_EXPECTED_CURRENT / 32768)
+#define INA219_CAL (uint16_t)(0.04096 / (INA219_CURRENT_LSB * INA219_R_SHUNT))
+
+    
+
+    while (true) {
+        printf("INA219 calibration word: %d\n", INA219_CAL);
+        sleep_ms(1000);
+    }
 }

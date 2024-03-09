@@ -50,6 +50,7 @@ target_link_libraries(pico-bldc
         hardware_spi
         hardware_i2c
         pico_i2c_slave
+        pico_multicore
         hardware_dma
         hardware_pio
         hardware_pwm
