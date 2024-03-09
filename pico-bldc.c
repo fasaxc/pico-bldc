@@ -362,12 +362,48 @@ void core1_entry() {
 #define INA219_R_SHUNT 0.05
 #define INA219_MAX_EXPECTED_CURRENT 6.0
 #define INA219_CURRENT_LSB  (INA219_MAX_EXPECTED_CURRENT / 32768)
-#define INA219_CAL (uint16_t)(0.04096 / (INA219_CURRENT_LSB * INA219_R_SHUNT))
-
-    
+    uint16_t ina_cal = (uint16_t)(0.04096 / (INA219_CURRENT_LSB * INA219_R_SHUNT));
+    uint8_t buf[3] = {INA219_REG_CALIB, ina_cal>>8, ina_cal};
+    bool done_calib = false;
 
     while (true) {
-        printf("INA219 calibration word: %d\n", INA219_CAL);
+        if (!done_calib) {
+            printf("Writing INA219 calibration word: %d\n", ina_cal);
+            int count = i2c_write_blocking(
+                I2C_CONT_PORT, 
+                I2C_INA219_ADDR, 
+                buf, 
+                3, 
+                false);
+            if (count < 0) {
+                puts("Couldn't write to INA219, please check wiring!");
+                continue;
+            } else {
+                done_calib = true;
+            }
+        }
+
+        buf[0] = INA219_REG_SHUNT_V;
+        int count = i2c_write_blocking(
+            I2C_CONT_PORT, 
+            I2C_INA219_ADDR, 
+            buf, 
+            1, 
+            true);
+        if (count < 0) {
+            puts("Couldn't write to INA219, please check wiring!");
+            continue;
+        }
+        i2c_read_blocking(
+            I2C_CONT_PORT,
+            I2C_INA219_ADDR,
+            &buf[1],
+            2,
+            false
+        );
+        int16_t shunt_v = ((int16_t)buf[1])<<8 | buf[2];
+        printf("Shunt V: %d\n", shunt_v);
+
         sleep_ms(1000);
     }
 }
