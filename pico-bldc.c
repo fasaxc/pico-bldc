@@ -404,6 +404,28 @@ void core1_entry() {
         int16_t shunt_v = ((int16_t)buf[1])<<8 | buf[2];
         printf("Shunt V: %d\n", shunt_v);
 
+
+        buf[0] = INA219_REG_CURRENT;
+        count = i2c_write_blocking(
+            I2C_CONT_PORT, 
+            I2C_INA219_ADDR, 
+            buf, 
+            1, 
+            true);
+        if (count < 0) {
+            puts("Couldn't write to INA219, please check wiring!");
+            continue;
+        }
+        i2c_read_blocking(
+            I2C_CONT_PORT,
+            I2C_INA219_ADDR,
+            &buf[1],
+            2,
+            false
+        );
+        int16_t current = ((int16_t)buf[1])<<8 | buf[2];
+        printf("Current: %d\n", current);
+
         sleep_ms(1000);
     }
 }
