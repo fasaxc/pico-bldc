@@ -94,6 +94,8 @@ enum I2CRegs {
     I2C_REG_BATT_V,  // LSB = 4mV
     I2C_REG_CURRENT, // LSB depend on calibration
     I2C_REG_POWER,   // LSB = 20 * I2C_REG_CURRENT LSB
+
+    I2C_REG_TEMPERATURE,  // LSB = 0.01C
     
     I2C_REG_COUNT,
 };
@@ -467,6 +469,7 @@ void core1_entry() {
         i2c_reg_set(I2C_REG_POWER, power);
 
         temp_c = read_onboard_temperature() * 0.05 + temp_c * 0.94;
+        i2c_reg_set(I2C_REG_TEMPERATURE, (uint16_t)(temp_c * 100));
 
         uint32_t now = time_us_32();
         if ((now - last_print) >= 1000000) {
