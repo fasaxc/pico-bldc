@@ -3,6 +3,7 @@
 #include "pico/stdlib.h"
 #include "pico/divider.h"
 #include "pico/i2c_slave.h"
+#include "hardware/adc.h"
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
 #include "hardware/divider.h"
@@ -346,8 +347,8 @@ calibrate:
             }
         }
         if ((time_us_32() - last_speed_report) > 1000000) {
-            print_fix15("pv", m[3].est_pole_v/11);
-            printf("\n");
+            //print_fix15("pv", m[3].est_pole_v/11);
+            //printf("\n");
             last_speed_report = time_us_32();
         }
     }
@@ -385,13 +386,32 @@ static int i2c_read_16(i2c_inst_t *i2c, uint8_t addr, uint8_t reg, uint16_t *res
     return 0;
 }
 
+float read_onboard_temperature() {
+    // From the Pico examples...
+    /* 12-bit conversion, assume max value == ADC_VREF == 3.3 V */
+    const float conversionFactor = 3.3f / (1 << 12);
+    float adc = (float)adc_read() * conversionFactor;
+    float tempC = 27.0f - (adc - 0.706f) / 0.001721f;
+    return tempC;
+}
+
 void core1_entry() {
     printf("Second core booting...\n");
+
+    // Set up our I2C controller port, which we use to 
+    // read the INA219.
     gpio_set_function(I2C_CONT_SDA, GPIO_FUNC_I2C);
     gpio_set_function(I2C_CONT_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(I2C_CONT_SDA);
     gpio_pull_up(I2C_CONT_SCL);
     i2c_init(I2C_CONT_PORT, 100*1000);
+
+    // Init the ADC, which we use to read the internal temperature.
+    adc_init();
+    adc_set_temp_sensor_enabled(true);
+    adc_select_input(4);
+
+    float temp_c = read_onboard_temperature();
 
 #define INA219_R_SHUNT 0.05
 #define INA219_MAX_EXPECTED_CURRENT 6.0
@@ -446,10 +466,12 @@ void core1_entry() {
         }
         i2c_reg_set(I2C_REG_POWER, power);
 
+        temp_c = read_onboard_temperature() * 0.05 + temp_c * 0.94;
+
         uint32_t now = time_us_32();
         if ((now - last_print) >= 1000000) {
-            printf("INA219: bus_v: %.2fV shunt_v: %.3fV current: %.3fA power: %.2fW\n", 
-                batt_v * 0.004f, shunt_v * 0.00001f, current * 0.0001831054688f , power * 0.003662109375f);
+            printf("Temp: %.1fC bus_v: %.2fV shunt_v: %.3fV current: %.3fA power: %.2fW\n", 
+                temp_c, batt_v * 0.004f, shunt_v * 0.00001f, current * 0.0001831054688f , power * 0.003662109375f);
             last_print = now;
         }
         sleep_ms(10);

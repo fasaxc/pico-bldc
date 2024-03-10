@@ -47,6 +47,7 @@ target_include_directories(pico-bldc PRIVATE
 
 # Add any user requested libraries
 target_link_libraries(pico-bldc 
+        hardware_adc
         hardware_spi
         hardware_i2c
         pico_i2c_slave
