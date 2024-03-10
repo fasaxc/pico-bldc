@@ -75,6 +75,7 @@ static struct
     i2c_reg_t value_out;
     int num_bytes_received;
     bool addr_received;
+    uint32_t volatile last_i2c_write_time;
 } i2c_context = {};
 
 enum I2CRegs {
@@ -96,13 +97,15 @@ enum I2CRegs {
     I2C_REG_POWER,   // LSB = 20 * I2C_REG_CURRENT LSB
 
     I2C_REG_TEMPERATURE,  // LSB = 0.01C
-    
+
     I2C_REG_COUNT,
 };
 
 #define I2C_REG_CTRL_EN    (1<<0)
 #define I2C_REG_CTRL_RUN   (1<<1)
 #define I2C_REG_CTRL_CALIB (1<<2)
+#define I2C_REG_CTRL_RESET (1<<3)
+#define I2C_REG_CTRL_WDEN  (1<<4)
 
 static critical_section_t i2c_reg_lock;
 static i2c_reg_t volatile i2c_registers[I2C_REG_COUNT] = {};
@@ -159,6 +162,7 @@ static void i2c_periph_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
             (i2c_context.num_bytes_received == sizeof(i2c_reg_t))) {
             // Valid address, received all bytes to write.
             i2c_reg_set(i2c_context.addr, i2c_context.value);
+            i2c_context.last_i2c_write_time = time_us_32();
         }
         i2c_context.addr_received = false;
         break;
@@ -294,14 +298,43 @@ calibrate:
             for (int i = 0; i< NUM_MOTORS; i++) {
                 motor_restore_calibration(&m[i], i2c_reg_get(I2C_REG_MOT0_CALIB+i));
             }
+
+            if ((i2c_ctrl & I2C_REG_CTRL_WDEN) && (i2c_ctrl & I2C_REG_CTRL_RUN)) {
+                // Watchdog is enabled. Check it.
+
+                // Must read last_write_time first since an interrupt could
+                // update it at any point.
+                uint32_t lwt = i2c_context.last_i2c_write_time;
+                uint32_t now = time_us_32();
+                uint32_t us_since_last_i2c_write = now - lwt;
+                if (us_since_last_i2c_write > 5000000) {
+                    puts("Watchdog expired!!!\n");
+                    i2c_ctrl &= (~I2C_REG_CTRL_RUN);
+                    i2c_reg_get_and_clear_mask(I2C_REG_CTRL, I2C_REG_CTRL_RUN);
+                    i2c_ctrl |= I2C_REG_CTRL_RESET;
+                }
+            }
+
+            if (i2c_ctrl & I2C_REG_CTRL_RESET) {
+                puts("Reset motor speeds.\n");
+                i2c_reg_get_and_clear_mask(I2C_REG_CTRL, I2C_REG_CTRL_RESET);
+                for (int i = 0; i < NUM_MOTORS; i++) {
+                    i2c_reg_set(I2C_REG_MOT0_V+i, 0);
+                }
+            }
+
             if (i2c_ctrl & I2C_REG_CTRL_RUN) {
+                // Motor power enabled.
                 for (int i = 0; i < NUM_MOTORS; i++) {
                     motor_set_v(&m[i], i2c_reg_get(I2C_REG_MOT0_V+i));
                 }
+                gpio_put(PIN_MOTOR_NRESET, 1); // high = run
             } else {
+                // Motor power disabled.
                 for (int i = 0; i < NUM_MOTORS; i++) {
                     motor_set_v(&m[i], 0);
                 }
+                gpio_put(PIN_MOTOR_NRESET, 0); // low = hold in reset.
             }
         } else {
             // Read buttons (which are pull-downs) and adjust target speed accordingly.
@@ -322,6 +355,7 @@ calibrate:
                 print_fix15("v", m[3].target_velocity);
                 printf("\n");
             }
+            gpio_put(PIN_MOTOR_NRESET, 1); // high = run
         }
 
         uint32_t start_time = time_us_32();
@@ -469,13 +503,13 @@ void core1_entry() {
         i2c_reg_set(I2C_REG_POWER, power);
 
         temp_c = read_onboard_temperature() * 0.05 + temp_c * 0.94;
-        i2c_reg_set(I2C_REG_TEMPERATURE, (uint16_t)(temp_c * 100));
+        i2c_reg_set(I2C_REG_TEMPERATURE, (i2c_reg_t)(temp_c * 100));
 
         uint32_t now = time_us_32();
         if ((now - last_print) >= 1000000) {
             printf("Temp: %.1fC bus_v: %.2fV shunt_v: %.3fV current: %.3fA power: %.2fW\n", 
                 temp_c, batt_v * 0.004f, shunt_v * 0.00001f, current * 0.0001831054688f , power * 0.003662109375f);
-            last_print = now;
+            last_print = now;    
         }
         sleep_ms(10);
     }
