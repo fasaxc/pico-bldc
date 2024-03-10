@@ -399,7 +399,7 @@ void core1_entry() {
     uint16_t ina_cal = (uint16_t)(0.04096 / (INA219_CURRENT_LSB * INA219_R_SHUNT));
     uint8_t buf[3] = {INA219_REG_CALIB, ina_cal>>8, ina_cal};
     bool done_calib = false;
-
+    uint32_t last_print = 0;
     while (true) {
         if (!done_calib) {
             uint16_t conf = 0x3b9f;
@@ -446,9 +446,12 @@ void core1_entry() {
         }
         i2c_reg_set(I2C_REG_POWER, power);
 
-        printf("INA219: bus_v: %.2fV shunt_v: %.3fV current: %.3fA power: %.2fW\n", 
-            batt_v * 0.004f, shunt_v * 0.00001f, current * 0.0001831054688f , power * 0.003662109375f);
-
-        sleep_ms(1000);
+        uint32_t now = time_us_32();
+        if ((now - last_print) >= 1000000) {
+            printf("INA219: bus_v: %.2fV shunt_v: %.3fV current: %.3fA power: %.2fW\n", 
+                batt_v * 0.004f, shunt_v * 0.00001f, current * 0.0001831054688f , power * 0.003662109375f);
+            last_print = now;
+        }
+        sleep_ms(10);
     }
 }
