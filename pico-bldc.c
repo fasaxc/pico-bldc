@@ -80,6 +80,8 @@ static struct
 
 enum I2CRegs {
     I2C_REG_CTRL,
+    I2C_REG_STATUS,
+    I2C_REG_WDOG_TIMEOUT_MS,
     I2C_REG_FAULT_COUNT,
     
     I2C_REG_MOT0_V,
@@ -98,8 +100,6 @@ enum I2CRegs {
 
     I2C_REG_TEMPERATURE,  // LSB = 0.01C
 
-    I2C_REG_WDOG_TIMEOUT_MS,
-
     I2C_REG_COUNT,
 };
 
@@ -108,6 +108,10 @@ enum I2CRegs {
 #define I2C_REG_CTRL_CALIB (1<<2)
 #define I2C_REG_CTRL_RESET (1<<3)
 #define I2C_REG_CTRL_WDEN  (1<<4)
+
+#define I2C_REG_STATUS_FAULT            (1<<0)
+#define I2C_REG_STATUS_CALIBRATION_DONE (1<<1)
+#define I2C_REG_STATUS_WDOG_EXPIRED     (1<<2)
 
 static critical_section_t i2c_reg_lock;
 static i2c_reg_t volatile i2c_registers[I2C_REG_COUNT] = {};
@@ -130,6 +134,12 @@ static inline i2c_reg_t i2c_reg_get_and_clear_mask(enum I2CRegs num, i2c_reg_t m
 static inline void i2c_reg_set(enum I2CRegs num, i2c_reg_t value) {
     critical_section_enter_blocking(&i2c_reg_lock);
     i2c_registers[num] = value;
+    critical_section_exit(&i2c_reg_lock);
+}
+
+static inline void i2c_reg_set_mask(enum I2CRegs num, i2c_reg_t mask) {
+    critical_section_enter_blocking(&i2c_reg_lock);
+    i2c_registers[num] |= mask;
     critical_section_exit(&i2c_reg_lock);
 }
 
@@ -163,7 +173,15 @@ static void i2c_periph_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
             (i2c_context.addr < I2C_REG_COUNT) &&
             (i2c_context.num_bytes_received == sizeof(i2c_reg_t))) {
             // Valid address, received all bytes to write.
-            i2c_reg_set(i2c_context.addr, i2c_context.value);
+            switch (i2c_context.addr) {
+            case I2C_REG_STATUS:
+                // Special handling: write clears the bits that were written.
+                i2c_reg_get_and_clear_mask(i2c_context.addr, i2c_context.value);
+                break;
+            default:
+                i2c_reg_set(i2c_context.addr, i2c_context.value);
+                break;
+            }
             i2c_context.last_i2c_write_time = time_us_32();
         }
         i2c_context.addr_received = false;
@@ -282,6 +300,7 @@ calibrate:
             uint16_t calibration_data = motor_get_calibration(&m[i]);
             i2c_reg_set(I2C_REG_MOT0_CALIB+i, calibration_data);
         }
+        i2c_reg_set_mask(I2C_REG_STATUS, I2C_REG_STATUS_CALIBRATION_DONE);
         printf("Calibration done.\n");
 
         // Calibration takes a while, make sure we don't trigger the watchdog 
@@ -321,6 +340,7 @@ calibrate:
                     i2c_ctrl &= (~I2C_REG_CTRL_RUN);
                     i2c_reg_get_and_clear_mask(I2C_REG_CTRL, I2C_REG_CTRL_RUN);
                     i2c_ctrl |= I2C_REG_CTRL_RESET;
+                    i2c_reg_set_mask(I2C_REG_STATUS, I2C_REG_STATUS_WDOG_EXPIRED);
                 }
             }
 
@@ -390,6 +410,9 @@ calibrate:
                 printf("Motor fault (count=%d)!\n", num_faults);
                 last_fault_report = time_us_32();
             }
+            i2c_reg_set_mask(I2C_REG_STATUS, I2C_REG_STATUS_FAULT);
+        } else {
+            i2c_reg_get_and_clear_mask(I2C_REG_STATUS, I2C_REG_STATUS_FAULT);
         }
         if ((time_us_32() - last_speed_report) > 1000000) {
             //print_fix15("pv", m[3].est_pole_v/11);
