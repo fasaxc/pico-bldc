@@ -351,6 +351,36 @@ calibrate:
     return 0;
 }
 
+static int i2c_write_16(i2c_inst_t *i2c, uint8_t addr, uint8_t reg, uint16_t value) {
+    uint8_t buf[3] = {reg, (uint8_t)(value >> 8), (uint8_t)value};
+    int count = i2c_write_blocking(i2c, addr, buf, 3, false);
+    if (count < 0) {
+        puts("Couldn't write to I2C, please check wiring!");
+        return count;
+    }
+    return 0;
+}
+
+static int i2c_read_16(i2c_inst_t *i2c, uint8_t addr, uint8_t reg, uint16_t *result) {
+    uint8_t buf[2];
+    buf[0] = reg;
+    // Write address on the bus, holding the trasactino open.
+    int count = i2c_write_blocking(i2c, addr, buf, 1, true);
+    if (count < 0) {
+        puts("Couldn't write to I2C, please check wiring!");
+        return count;
+    }
+    // Read back two bytes.
+    count = i2c_read_blocking(i2c, addr, buf, 2, false);
+    if (count < 0) {
+        puts("Couldn't read I2C, please check wiring!");
+        return count;
+    }
+    // I2C is generally big-endian.
+    *result = ((uint16_t)buf[0])<<8 | buf[1];
+    return 0;
+}
+
 void core1_entry() {
     printf("Second core booting...\n");
     gpio_set_function(I2C_CONT_SDA, GPIO_FUNC_I2C);
@@ -368,63 +398,45 @@ void core1_entry() {
 
     while (true) {
         if (!done_calib) {
-            printf("Writing INA219 calibration word: %d\n", ina_cal);
-            int count = i2c_write_blocking(
-                I2C_CONT_PORT, 
-                I2C_INA219_ADDR, 
-                buf, 
-                3, 
-                false);
-            if (count < 0) {
+            uint16_t conf = 0x3b9f;
+            int err = i2c_write_16(I2C_CONT_PORT, I2C_INA219_ADDR, 
+                INA219_REG_CONF, conf);
+            if (err) {
                 puts("Couldn't write to INA219, please check wiring!");
                 continue;
-            } else {
-                done_calib = true;
-            }
+            } 
+            printf("Writing INA219 calibration word: %d\n", ina_cal);
+            err = i2c_write_16(I2C_CONT_PORT, I2C_INA219_ADDR, 
+                INA219_REG_CALIB, ina_cal);
+            if (err) {
+                puts("Couldn't write to INA219, please check wiring!");
+                continue;
+            } 
+            done_calib = true;
         }
 
-        buf[0] = INA219_REG_SHUNT_V;
-        int count = i2c_write_blocking(
-            I2C_CONT_PORT, 
-            I2C_INA219_ADDR, 
-            buf, 
-            1, 
-            true);
-        if (count < 0) {
-            puts("Couldn't write to INA219, please check wiring!");
+        int16_t shunt_v;
+        int err = i2c_read_16(I2C_CONT_PORT, I2C_INA219_ADDR, INA219_REG_SHUNT_V, &shunt_v);
+        if (err) {
             continue;
         }
-        i2c_read_blocking(
-            I2C_CONT_PORT,
-            I2C_INA219_ADDR,
-            &buf[1],
-            2,
-            false
-        );
-        int16_t shunt_v = ((int16_t)buf[1])<<8 | buf[2];
-        printf("Shunt V: %d\n", shunt_v);
-
-
-        buf[0] = INA219_REG_CURRENT;
-        count = i2c_write_blocking(
-            I2C_CONT_PORT, 
-            I2C_INA219_ADDR, 
-            buf, 
-            1, 
-            true);
-        if (count < 0) {
-            puts("Couldn't write to INA219, please check wiring!");
+        int16_t batt_v;
+        err = i2c_read_16(I2C_CONT_PORT, I2C_INA219_ADDR, INA219_REG_BUS_V, &batt_v);
+        if (err) {
             continue;
         }
-        i2c_read_blocking(
-            I2C_CONT_PORT,
-            I2C_INA219_ADDR,
-            &buf[1],
-            2,
-            false
-        );
-        int16_t current = ((int16_t)buf[1])<<8 | buf[2];
-        printf("Current: %d\n", current);
+        int16_t current;
+        err = i2c_read_16(I2C_CONT_PORT, I2C_INA219_ADDR, INA219_REG_CURRENT, &current);
+        if (err) {
+            continue;
+        }
+        int16_t power;
+        err = i2c_read_16(I2C_CONT_PORT, I2C_INA219_ADDR, INA219_REG_POWER, &power);
+        if (err) {
+            continue;
+        }
+
+        printf("INA219: bus_v=%d shunt_v=%d current=%d, power=%d\n", batt_v, shunt_v, current, power);
 
         sleep_ms(1000);
     }
