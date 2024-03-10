@@ -89,6 +89,10 @@ enum I2CRegs {
     I2C_REG_MOT1_CALIB,
     I2C_REG_MOT2_CALIB,
     I2C_REG_MOT3_CALIB,
+
+    I2C_REG_BATT_V,
+    I2C_REG_CURRENT,
+    I2C_REG_POWER,
     
     I2C_REG_COUNT,
 };
@@ -425,18 +429,25 @@ void core1_entry() {
         if (err) {
             continue;
         }
+        batt_v = batt_v >> 3; // Ignore control bits.
+        i2c_reg_set(I2C_REG_BATT_V, batt_v);
+
         int16_t current;
         err = i2c_read_16(I2C_CONT_PORT, I2C_INA219_ADDR, INA219_REG_CURRENT, &current);
         if (err) {
             continue;
         }
+        i2c_reg_set(I2C_REG_CURRENT, current);
+
         int16_t power;
         err = i2c_read_16(I2C_CONT_PORT, I2C_INA219_ADDR, INA219_REG_POWER, &power);
         if (err) {
             continue;
         }
+        i2c_reg_set(I2C_REG_POWER, power);
 
-        printf("INA219: bus_v=%d shunt_v=%d current=%d, power=%d\n", batt_v, shunt_v, current, power);
+        printf("INA219: bus_v: %.2fV shunt_v: %.3fV current: %.3fA power: %.2fW\n", 
+            batt_v * 0.004f, shunt_v * 0.00001f, current * 0.0001831054688f , power * 0.003662109375f);
 
         sleep_ms(1000);
     }
