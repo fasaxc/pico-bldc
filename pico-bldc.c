@@ -98,6 +98,8 @@ enum I2CRegs {
 
     I2C_REG_TEMPERATURE,  // LSB = 0.01C
 
+    I2C_REG_WDOG_TIMEOUT_MS,
+
     I2C_REG_COUNT,
 };
 
@@ -205,6 +207,7 @@ int main()
 
     // I2C Initialisation.
     critical_section_init(&i2c_reg_lock);
+    i2c_reg_set(I2C_REG_WDOG_TIMEOUT_MS, 2000);
     gpio_set_function(I2C_PERIPH_SDA, GPIO_FUNC_I2C);
     gpio_set_function(I2C_PERIPH_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(I2C_PERIPH_SDA);
@@ -280,6 +283,10 @@ calibrate:
             i2c_reg_set(I2C_REG_MOT0_CALIB+i, calibration_data);
         }
         printf("Calibration done.\n");
+
+        // Calibration takes a while, make sure we don't trigger the watchdog 
+        // immediately.
+        i2c_context.last_i2c_write_time = time_us_32();
     }
 
     int n = 0;
@@ -307,7 +314,9 @@ calibrate:
                 uint32_t lwt = i2c_context.last_i2c_write_time;
                 uint32_t now = time_us_32();
                 uint32_t us_since_last_i2c_write = now - lwt;
-                if (us_since_last_i2c_write > 5000000) {
+
+                uint32_t timeout = (uint32_t)i2c_reg_get(I2C_REG_WDOG_TIMEOUT_MS) * 1000;
+                if (us_since_last_i2c_write > timeout) {
                     puts("Watchdog expired!!!\n");
                     i2c_ctrl &= (~I2C_REG_CTRL_RUN);
                     i2c_reg_get_and_clear_mask(I2C_REG_CTRL, I2C_REG_CTRL_RUN);
