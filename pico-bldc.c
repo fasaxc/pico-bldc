@@ -90,9 +90,9 @@ enum I2CRegs {
     I2C_REG_MOT2_CALIB,
     I2C_REG_MOT3_CALIB,
 
-    I2C_REG_BATT_V,
-    I2C_REG_CURRENT,
-    I2C_REG_POWER,
+    I2C_REG_BATT_V,  // LSB = 4mV
+    I2C_REG_CURRENT, // LSB depend on calibration
+    I2C_REG_POWER,   // LSB = 20 * I2C_REG_CURRENT LSB
     
     I2C_REG_COUNT,
 };
