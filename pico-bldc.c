@@ -294,6 +294,7 @@ int main()
          (i2c_reg_get(I2C_REG_CTRL) & I2C_REG_CTRL_CALIB)) {
 calibrate:
         i2c_reg_get_and_clear_mask(I2C_REG_CTRL, I2C_REG_CTRL_CALIB);
+        gpio_put(PIN_MOTOR_NRESET, 1); // Enable motors
         for (int i = 0; i < NUM_MOTORS; i++) {
             printf("Calibrating motor %d...\n", i);
             motor_calibrate(&m[i]);
