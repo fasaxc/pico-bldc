@@ -269,6 +269,7 @@ void motor_process_angle_meas(struct motor_cb *cb) {
     } else if (delta_angle < fix15c(-0.5)) {
         delta_angle += 1;
     }
+    cb->distance_traveled += delta_angle;
 
     fix15_t delta_t_s = USEC_TO_FIX15_S(delta_t_us);
     fix15_t est_v = delta_angle / delta_t_s;

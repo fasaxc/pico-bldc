@@ -67,6 +67,7 @@ struct motor_cb {
     uint pwm_slice_a, pwm_slice_b, pwm_slice_c;
     uint pwm_chan_a, pwm_chan_b, pwm_chan_c;
 
+    fix15_t distance_traveled; // 1.0 = 1 rotation.
     fix15_t est_pole_v;
     fix15_t last_pole_angle;
     uint32_t last_angle_upd_time;

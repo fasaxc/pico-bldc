@@ -100,6 +100,11 @@ enum I2CRegs {
 
     I2C_REG_TEMPERATURE,  // LSB = 0.01C
 
+    I2C_REG_MOT0_TRAVEL,
+    I2C_REG_MOT1_TRAVEL,
+    I2C_REG_MOT2_TRAVEL,
+    I2C_REG_MOT3_TRAVEL,
+
     I2C_REG_COUNT,
 };
 
@@ -294,7 +299,7 @@ int main()
          (i2c_reg_get(I2C_REG_CTRL) & I2C_REG_CTRL_CALIB)) {
 calibrate:
         i2c_reg_get_and_clear_mask(I2C_REG_CTRL, I2C_REG_CTRL_CALIB);
-        gpio_put(PIN_MOTOR_NRESET, 1); // Enable motors
+        gpio_put(PIN_MOTOR_NRESET, 1); // Enable motors 
         for (int i = 0; i < NUM_MOTORS; i++) {
             printf("Calibrating motor %d...\n", i);
             motor_calibrate(&m[i]);
@@ -324,6 +329,7 @@ calibrate:
             }
             for (int i = 0; i< NUM_MOTORS; i++) {
                 motor_restore_calibration(&m[i], i2c_reg_get(I2C_REG_MOT0_CALIB+i));
+                i2c_reg_set(I2C_REG_MOT0_TRAVEL+i, m[i].distance_traveled<<8);
             }
 
             if ((i2c_ctrl & I2C_REG_CTRL_WDEN) && (i2c_ctrl & I2C_REG_CTRL_RUN)) {
